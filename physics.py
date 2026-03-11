@@ -4,6 +4,8 @@ import numpy as np
 MU = 398600.4418
 J2 = 1.08263e-3
 RE = 6378.137
+ISP = 300.0
+G0 = 9.80665 
 
 #J2 acceleration vector 
 #-> input value -> [x, y, z]
@@ -49,8 +51,13 @@ def rk4_step(state, dt):
 def propagate(state, duration, dt = 10):
     state = np.array(state)
     for i in range(0, int(duration / dt)):
-        rk4_step(state, dt)
+        state = rk4_step(state, dt)
     return state
+
+# delta_v must be in m/s, not km/s tsiolkovsky equation helps us track the current mass of the rocket based on the depleting fuel resource
+
+def tsiolkovsky(mass_current, delta_v):
+    return mass_current * (1 - np.exp(-np.abs(delta_v) / (ISP * G0)))
 
 #Orbital Period in seconds
 
