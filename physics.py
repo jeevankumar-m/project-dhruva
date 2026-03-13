@@ -54,7 +54,7 @@ def propagate(state, duration, dt = 10):
         state = rk4_step(state, dt)
     return state
 
-# delta_v must be in m/s, not km/s tsiolkovsky equation helps us track the current mass of the rocket based on the depleting fuel resource
+#delta_v must be in m/s, not km/s tsiolkovsky equation helps us track the current mass of the rocket based on the depleting fuel resource
 
 def tsiolkovsky(mass_current, delta_v):
     return mass_current * (1 - np.exp(-np.abs(delta_v) / (ISP * G0)))
@@ -69,11 +69,11 @@ def orbital_period(altitude_km):
 
 ### TESTING AREA
 # function testing
-
-print(j2_acceleration([2, 3, 4]))
-print(derivatives([2, 3, 4, 2, 3, 4]))
-state = np.array([6778.0, 0.0, 0.0, 0.0, 7.6, 0.0])
-print(rk4_step(state, 10))
-result = propagate(state, 5700, 10)
-print(np.linalg.norm(result[:3]))
-print(orbital_period(400))
+if __name__ == "__main__":
+    print(j2_acceleration([2, 3, 4]))
+    print(derivatives([2, 3, 4, 2, 3, 4]))
+    state = np.array([6778.0, 0.0, 0.0, 0.0, 7.6, 0.0])
+    print(rk4_step(state, 10))
+    result = propagate(state, 5700, 10)
+    print(np.linalg.norm(result[:3]))
+    print(orbital_period(400))
