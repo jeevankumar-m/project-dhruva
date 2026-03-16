@@ -24,6 +24,8 @@ class Satellite(SpaceObject):
     last_burn_time: datetime | None = None
     total_delta_v_mps: float = 0.0
     collisions_avoided: int = 0
+    in_graveyard_orbit: bool = False
+    graveyard_entry_time: datetime | None = None
 
     @property
     def mass_current_kg(self) -> float:

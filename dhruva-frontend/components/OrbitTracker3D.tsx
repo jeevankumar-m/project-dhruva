@@ -397,12 +397,8 @@ export default function OrbitTracker3D({
       if (selectedSatelliteId && entitiesRef.current[`sat_${selectedSatelliteId}`]) {
         const selectedEnt = entitiesRef.current[`sat_${selectedSatelliteId}`];
         viewer.selectedEntity = undefined;
-        viewer.trackedEntity = undefined;
-        void viewer.zoomTo(selectedEnt, new Cesium.HeadingPitchRange(0, -Cesium.Math.PI_OVER_FOUR, 14000000)).then(() => {
-          if (previousSelectedIdRef.current === selectedSatelliteId) {
-            viewer.trackedEntity = selectedEnt;
-          }
-        });
+        // Preserve the user's current camera distance/zoom and only switch tracking target.
+        viewer.trackedEntity = selectedEnt;
       } else if (!selectedSatelliteId) {
         viewer.selectedEntity = undefined;
         viewer.trackedEntity = undefined;

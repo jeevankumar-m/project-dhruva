@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const menuItems = [
   { id: "dashboard", label: "Dashboard", icon: "grid", href: "/" },
   { id: "logs", label: "Burn Logs", icon: "doc", href: "/reports" },
+  { id: "graveyard", label: "Graveyard Orbit", icon: "archive", href: "/graveyard" },
   { id: "alerts", label: "CDM Alerts", icon: "bell", href: "/alerts" },
   { id: "settings", label: "Settings", icon: "gear", href: "/settings" },
 ];
@@ -31,6 +32,13 @@ const icons: Record<string, React.ReactNode> = {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.73 21a2 2 0 01-3.46 0" />
+    </svg>
+  ),
+  archive: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="4" width="18" height="5" />
+      <path d="M5 9h14v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z" />
+      <line x1="10" y1="13" x2="14" y2="13" />
     </svg>
   ),
   gear: (

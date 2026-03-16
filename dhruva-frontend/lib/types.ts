@@ -8,8 +8,10 @@ export interface SatelliteSnapshot {
   fuel_kg: number;
   planned_fuel_kg?: number;
   planned_mass_kg?: number;
-  status: "NOMINAL" | "OUT_OF_BOX" | string;
+  status: "NOMINAL" | "OUT_OF_BOX" | "GRAVEYARD" | string;
   drift_km: number;
+  in_graveyard_orbit?: boolean;
+  graveyard_entry_time?: string | null;
   nominal: {
     lat: number;
     lon: number;
@@ -64,12 +66,17 @@ export interface SnapshotPayload {
     satellites: number;
     debris: number;
     conjunction_warnings: number;
+    graveyard?: number;
   };
   metrics: {
     fleet_fuel_pct: number;
     fleet_fuel_planned_pct?: number;
     collisions_avoided: number;
     total_delta_v_mps: number;
+    uptime_pct?: number;
+    uptime_score?: number;
+    outage_sat_seconds?: number;
+    avoidance_per_delta_v?: number;
     time_warp_x?: number;
   };
 }

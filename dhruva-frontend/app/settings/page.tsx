@@ -22,6 +22,7 @@ export default function SettingsPage() {
               <div>Satellites: {snapshot?.counts?.satellites ?? 0}</div>
               <div>Debris objects: {snapshot?.counts?.debris ?? 0}</div>
               <div>Active CDM warnings: {snapshot?.counts?.conjunction_warnings ?? 0}</div>
+              <div>Graveyard satellites: {snapshot?.counts?.graveyard ?? 0}</div>
             </div>
           </div>
 
