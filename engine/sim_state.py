@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import math
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,8 @@ MIN_COMMAND_LATENCY_SECONDS = 10
 CRITICAL_COLLISION_KM = 0.1
 BLACKOUT_LOOKAHEAD_SECONDS = 1800
 BLACKOUT_SAMPLE_SECONDS = 60
+EOL_FUEL_THRESHOLD_PCT = 5.0
+GRAVEYARD_DV_KMPS = 0.009
 
 
 @dataclass
@@ -35,6 +38,10 @@ class SimulationState:
         self.maneuvers: list[ManeuverCommand] = []
         self.conjunctions: list[ConjunctionWarning] = []
         self.total_collisions_avoided = 0
+        self.elapsed_sim_seconds = 0.0
+        self.outage_sat_seconds = 0.0
+        self.uptime_pct = 100.0
+        self.uptime_score = 100.0
         self._stream_ticks_since_assessment = 0
         self.blackout_status: list[dict] = []
         self._blackout_ticks_since_update = 9999
@@ -101,6 +108,10 @@ class SimulationState:
         self.maneuvers.clear()
         self.conjunctions.clear()
         self.total_collisions_avoided = 0
+        self.elapsed_sim_seconds = 0.0
+        self.outage_sat_seconds = 0.0
+        self.uptime_pct = 100.0
+        self.uptime_score = 100.0
         self.blackout_status = []
         self._blackout_ticks_since_update = 9999
 
@@ -247,13 +258,19 @@ class SimulationState:
             if recent_burns:
                 continue
 
-            v = sat.state[3:6]
-            v_mag = float(np.linalg.norm(v))
-            if v_mag < 1e-10:
+            rtn_basis = self._rtn_basis(sat.state)
+            if rtn_basis is None:
                 continue
-            v_unit = v / v_mag
-            dv_magnitude = 0.005
-            dv = v_unit * dv_magnitude
+            r_hat, t_hat, n_hat = rtn_basis
+
+            # Plan evasions in RTN frame (radial-transverse-normal), then rotate
+            # to ECI for execution. This aligns with flight dynamics practice.
+            # Keep burns small to respect per-burn propulsive limits.
+            rel_ang = math.radians(float(cdm.relative_angle_deg))
+            dv_r = 0.0015 * math.cos(rel_ang)
+            dv_t = 0.0045 if cdm.risk_level == "CRITICAL" else 0.0030
+            dv_n = 0.0006 * math.sin(rel_ang * 0.5)
+            dv = dv_r * r_hat + dv_t * t_hat + dv_n * n_hat
 
             candidate_evasion = ManeuverCommand(
                 burn_id=f"AUTO-EVA-{cdm.debris_id}",
@@ -280,6 +297,99 @@ class SimulationState:
             fuel_ok_recovery, _, _ = self._project_satellite_mass_with_commands(sat, pending_with_recovery)
             if fuel_ok_recovery:
                 self.maneuvers.append(candidate_recovery)
+
+    def _rtn_basis(self, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        r = state[:3]
+        v = state[3:6]
+        r_mag = float(np.linalg.norm(r))
+        if r_mag < 1e-10:
+            return None
+        r_hat = r / r_mag
+        h = np.cross(r, v)
+        h_mag = float(np.linalg.norm(h))
+        if h_mag < 1e-10:
+            return None
+        n_hat = h / h_mag
+        t_hat = np.cross(n_hat, r_hat)
+        t_mag = float(np.linalg.norm(t_hat))
+        if t_mag < 1e-10:
+            return None
+        t_hat = t_hat / t_mag
+        return r_hat, t_hat, n_hat
+
+    def _update_objective_metrics(self, step_seconds: float) -> None:
+        sat_count = max(1, len(self.satellites))
+        out_of_box = sum(
+            1 for sat in self.satellites.values()
+            if float(np.linalg.norm(sat.state[:3] - sat.nominal_state[:3])) > 10.0
+        )
+        self.elapsed_sim_seconds += float(step_seconds)
+        self.outage_sat_seconds += float(out_of_box) * float(step_seconds)
+
+        denom = max(1.0, self.elapsed_sim_seconds * sat_count)
+        outage_ratio = min(1.0, self.outage_sat_seconds / denom)
+        self.uptime_pct = max(0.0, (1.0 - outage_ratio) * 100.0)
+        # Exponential service-degradation score per spec direction.
+        self.uptime_score = 100.0 * math.exp(-3.0 * outage_ratio)
+
+    def _satellite_fuel_pct(self, sat: Satellite) -> float:
+        initial_fuel = 50.0
+        return (sat.fuel_kg / initial_fuel) * 100.0
+
+    def _has_pending_graveyard_command(self, sat_id: str) -> bool:
+        return any(
+            (
+                m.satellite_id == sat_id
+                and not m.executed
+                and not m.rejected
+                and m.burn_id.startswith("EOL-GRAVEYARD")
+            )
+            for m in self.maneuvers
+        )
+
+    def _find_next_los_upload_time(self, sat_state: np.ndarray, max_lookahead_seconds: int = 5400) -> datetime | None:
+        earliest = self.current_time + timedelta(seconds=MIN_COMMAND_LATENCY_SECONDS)
+        if self.ground_stations.has_line_of_sight(sat_state[:3], earliest):
+            return earliest
+
+        probe_state = sat_state.copy()
+        for t in range(BLACKOUT_SAMPLE_SECONDS, max_lookahead_seconds + BLACKOUT_SAMPLE_SECONDS, BLACKOUT_SAMPLE_SECONDS):
+            probe_state = rk4_step(probe_state, BLACKOUT_SAMPLE_SECONDS)
+            candidate_time = self.current_time + timedelta(seconds=t)
+            if candidate_time < earliest:
+                continue
+            if self.ground_stations.has_line_of_sight(probe_state[:3], candidate_time):
+                return candidate_time
+        return None
+
+    def _schedule_graveyard_if_needed(self) -> None:
+        for sat in self.satellites.values():
+            if sat.in_graveyard_orbit:
+                continue
+            if self._satellite_fuel_pct(sat) > EOL_FUEL_THRESHOLD_PCT:
+                continue
+            if self._has_pending_graveyard_command(sat.object_id):
+                continue
+
+            upload_time = self._find_next_los_upload_time(sat.state, max_lookahead_seconds=7200)
+            if upload_time is None:
+                continue
+
+            v = sat.state[3:6]
+            v_mag = float(np.linalg.norm(v))
+            if v_mag < 1e-10:
+                continue
+            v_unit = v / v_mag
+            dv_vec = v_unit * GRAVEYARD_DV_KMPS
+
+            self.maneuvers.append(
+                ManeuverCommand(
+                    burn_id=f"EOL-GRAVEYARD-{sat.object_id}",
+                    satellite_id=sat.object_id,
+                    burn_time=upload_time,
+                    delta_v_eci_kmps=dv_vec,
+                )
+            )
 
     def _execute_stream_maneuvers(self, prev_time: datetime, new_time: datetime) -> None:
         due = [
@@ -308,12 +418,17 @@ class SimulationState:
             sat.total_delta_v_mps += dv_mps
             sat.last_burn_time = cmd.burn_time
             cmd.executed = True
+            if cmd.burn_id.startswith("EOL-GRAVEYARD"):
+                sat.in_graveyard_orbit = True
+                sat.graveyard_entry_time = cmd.burn_time
 
     def stream_tick(self, step_seconds: float = 10.0, reassess_every: int = 300) -> None:
         prev_time = self.current_time
         self._propagate_all(step_seconds)
         self.current_time = self.current_time + timedelta(seconds=step_seconds)
         self._execute_stream_maneuvers(prev_time, self.current_time)
+        self._update_objective_metrics(step_seconds)
+        self._schedule_graveyard_if_needed()
         self._stream_ticks_since_assessment += 1
         self._blackout_ticks_since_update += 1
 
@@ -527,6 +642,9 @@ class SimulationState:
             sat.total_delta_v_mps += dv_mps
             sat.last_burn_time = cmd.burn_time
             cmd.executed = True
+            if cmd.burn_id.startswith("EOL-GRAVEYARD"):
+                sat.in_graveyard_orbit = True
+                sat.graveyard_entry_time = cmd.burn_time
             executed += 1
 
         if cursor < end:
@@ -535,10 +653,12 @@ class SimulationState:
         return executed
 
     def step(self, step_seconds: int) -> ExecutionSummary:
+        self._schedule_graveyard_if_needed()
         start = self.current_time
         end = self.current_time + timedelta(seconds=step_seconds)
 
         maneuvers_executed = self._execute_due_maneuvers(start, end)
+        self._update_objective_metrics(float(step_seconds))
 
         self.current_time = end
         self.conjunctions = assess_conjunctions(
@@ -577,8 +697,18 @@ class SimulationState:
                     "fuel_kg": sat.fuel_kg,
                     "planned_fuel_kg": float(planned_fuel_kg),
                     "planned_mass_kg": float(planned_mass_kg),
-                    "status": "NOMINAL" if drift <= 10.0 else "OUT_OF_BOX",
+                    "status": (
+                        "GRAVEYARD"
+                        if sat.in_graveyard_orbit
+                        else ("NOMINAL" if drift <= 10.0 else "OUT_OF_BOX")
+                    ),
                     "drift_km": drift,
+                    "in_graveyard_orbit": sat.in_graveyard_orbit,
+                    "graveyard_entry_time": (
+                        sat.graveyard_entry_time.isoformat()
+                        if sat.graveyard_entry_time is not None
+                        else None
+                    ),
                     "nominal": {
                         "lat": nominal_geo.lat_deg,
                         "lon": nominal_geo.lon_deg,
@@ -638,6 +768,8 @@ class SimulationState:
         total_fuel_remaining = float(sum(fleet_fuel))
         total_planned_fuel_remaining = float(sum(fleet_planned_fuel))
         total_fuel_capacity = max(1.0, 50.0 * max(len(fleet_fuel), 1))
+        total_delta_v = float(sum(s.total_delta_v_mps for s in self.satellites.values()))
+        avoided_per_dv = float(self.total_collisions_avoided) / max(1.0, total_delta_v)
 
         return {
             "timestamp": self.current_time.isoformat(),
@@ -649,13 +781,18 @@ class SimulationState:
                 "fleet_fuel_pct": (total_fuel_remaining / total_fuel_capacity) * 100.0,
                 "fleet_fuel_planned_pct": (total_planned_fuel_remaining / total_fuel_capacity) * 100.0,
                 "collisions_avoided": self.total_collisions_avoided,
-                "total_delta_v_mps": float(sum(s.total_delta_v_mps for s in self.satellites.values())),
+                "total_delta_v_mps": total_delta_v,
+                "uptime_pct": self.uptime_pct,
+                "uptime_score": self.uptime_score,
+                "outage_sat_seconds": self.outage_sat_seconds,
+                "avoidance_per_delta_v": avoided_per_dv,
                 "time_warp_x": self.time_warp_multiplier,
             },
             "counts": {
                 "satellites": len(self.satellites),
                 "debris": len(self.debris),
                 "conjunction_warnings": len(self.conjunctions),
+                "graveyard": sum(1 for sat in self.satellites.values() if sat.in_graveyard_orbit),
             },
             "ground_stations": self.ground_stations.to_snapshot(),
             "burn_logs": [

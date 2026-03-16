@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
@@ -58,14 +59,67 @@ def assess_conjunctions(
     horizon_seconds: int = 7200,
     sample_seconds: int = 30,
     miss_threshold_km: float = 50.0,
+    spatial_cell_km: float = 500.0,
+    max_initial_range_km: float = 3000.0,
 ) -> list[ConjunctionWarning]:
     if not satellites or not debris:
         return []
 
     warnings: list[ConjunctionWarning] = []
+    checked_pairs: set[tuple[str, str]] = set()
+
+    # Spatial hash indexing to avoid brute-force O(N^2) pair checks.
+    debris_cells: dict[tuple[int, int, int], list[tuple[str, np.ndarray]]] = {}
+    for deb_id, deb_state in debris.items():
+        pos = deb_state[:3]
+        key = (
+            int(math.floor(float(pos[0]) / spatial_cell_km)),
+            int(math.floor(float(pos[1]) / spatial_cell_km)),
+            int(math.floor(float(pos[2]) / spatial_cell_km)),
+        )
+        debris_cells.setdefault(key, []).append((deb_id, deb_state))
+
+    neighbor_radius = int(math.ceil(max_initial_range_km / spatial_cell_km))
 
     for sat_id, sat_state in satellites.items():
-        for deb_id, deb_state in debris.items():
+        sat_pos = sat_state[:3]
+        sat_vel = sat_state[3:6]
+        sat_key = (
+            int(math.floor(float(sat_pos[0]) / spatial_cell_km)),
+            int(math.floor(float(sat_pos[1]) / spatial_cell_km)),
+            int(math.floor(float(sat_pos[2]) / spatial_cell_km)),
+        )
+
+        candidate_debris: list[tuple[str, np.ndarray]] = []
+        for dx in range(-neighbor_radius, neighbor_radius + 1):
+            for dy in range(-neighbor_radius, neighbor_radius + 1):
+                for dz in range(-neighbor_radius, neighbor_radius + 1):
+                    candidate_debris.extend(
+                        debris_cells.get((sat_key[0] + dx, sat_key[1] + dy, sat_key[2] + dz), [])
+                    )
+
+        for deb_id, deb_state in candidate_debris:
+            pair_key = (sat_id, deb_id)
+            if pair_key in checked_pairs:
+                continue
+            checked_pairs.add(pair_key)
+
+            deb_pos = deb_state[:3]
+            deb_vel = deb_state[3:6]
+            rel_pos = deb_pos - sat_pos
+            rel_vel = deb_vel - sat_vel
+            current_dist = float(np.linalg.norm(rel_pos))
+            rel_speed = float(np.linalg.norm(rel_vel))
+
+            if current_dist > max_initial_range_km:
+                continue
+
+            # Conservative kinematic filter: if even straight-line closure cannot
+            # approach the threshold in horizon, skip expensive propagation.
+            max_closure = rel_speed * float(horizon_seconds)
+            if current_dist - max_closure > miss_threshold_km:
+                continue
+
             tca, miss, sat_pos, deb_pos = predict_tca(
                 sat_state, deb_state, horizon_seconds, sample_seconds,
             )
