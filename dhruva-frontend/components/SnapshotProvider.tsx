@@ -38,6 +38,11 @@ export function SnapshotProvider({ children }: { children: React.ReactNode }) {
   const [timeWarpX, setTimeWarpX] = useState(1);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const statusRef = useRef<SnapshotContextType["status"]>("connecting");
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   const ingestSnapshot = useCallback((data: SnapshotPayload) => {
     setSnapshot(data);
@@ -67,10 +72,11 @@ export function SnapshotProvider({ children }: { children: React.ReactNode }) {
       return merged.slice(-180);
     });
 
-    if (!selectedSatelliteId && data.satellites.length > 0) {
-      setSelectedSatelliteId(data.satellites[0].id);
+    if (data.satellites.length > 0) {
+      const firstId = data.satellites[0].id;
+      setSelectedSatelliteId((prev) => prev ?? firstId);
     }
-  }, [selectedSatelliteId]);
+  }, []);
 
   const changeTimeWarp = useCallback(
     async (direction: -1 | 1) => {
@@ -94,12 +100,14 @@ export function SnapshotProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
+    let reconnectTimer: number | null = null;
 
     const initialLoad = async () => {
       try {
         const data = await fetchSnapshot();
         if (!mounted) return;
         ingestSnapshot(data);
+        setStatus("degraded");
       } catch {
         if (mounted) setStatus("degraded");
       }
@@ -107,43 +115,55 @@ export function SnapshotProvider({ children }: { children: React.ReactNode }) {
 
     initialLoad();
 
-    const ws = createOrbitSocket((data) => {
+    const connectWebSocket = () => {
       if (!mounted) return;
-      setStatus("live");
-      ingestSnapshot(data);
-    });
+      const ws = createOrbitSocket((data) => {
+        if (!mounted) return;
+        setStatus("live");
+        ingestSnapshot(data);
+      });
 
-    ws.onopen = () => {
-      if (mounted) setStatus("live");
+      ws.onopen = () => {
+        if (mounted) setStatus("live");
+      };
+
+      ws.onclose = () => {
+        if (!mounted) return;
+        setStatus("degraded");
+        reconnectTimer = window.setTimeout(connectWebSocket, 500);
+      };
+
+      ws.onerror = () => {
+        if (!mounted) return;
+        setStatus("error");
+      };
+
+      wsRef.current = ws;
     };
 
-    ws.onclose = () => {
-      if (mounted) setStatus("degraded");
-    };
-
-    ws.onerror = () => {
-      if (mounted) setStatus("error");
-    };
-
-    wsRef.current = ws;
+    connectWebSocket();
 
     const poll = window.setInterval(async () => {
+      if (statusRef.current === "live") return;
       try {
         const data = await fetchSnapshot();
         if (!mounted) return;
         ingestSnapshot(data);
-        if (status !== "live") setStatus("degraded");
+        setStatus("degraded");
       } catch {
-        if (mounted && status === "degraded") setStatus("disconnected");
+        if (mounted && statusRef.current !== "live") setStatus("disconnected");
       }
-    }, 3000);
+    }, 400);
 
     return () => {
       mounted = false;
       window.clearInterval(poll);
+       if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
       wsRef.current?.close();
     };
-  }, [ingestSnapshot, status]);
+  }, [ingestSnapshot]);
 
   const value = useMemo<SnapshotContextType>(
     () => ({

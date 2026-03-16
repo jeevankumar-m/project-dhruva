@@ -123,6 +123,9 @@ class SimulationState:
         self.conjunctions = assess_conjunctions(
             satellites={k: v.state.copy() for k, v in self.satellites.items()},
             debris={k: v.state.copy() for k, v in self.debris.items()},
+            # Keep startup fast for local interactive runs.
+            horizon_seconds=1200,
+            sample_seconds=60,
         )
 
     def _seed_test_debris(self, count: int = 20) -> None:
@@ -211,6 +214,20 @@ class SimulationState:
             if sat is None:
                 continue
 
+            # Prevent unbounded growth of auto-generated pending maneuvers,
+            # which can degrade snapshot and scheduling performance over time.
+            pending_auto = [
+                m for m in self.maneuvers
+                if (
+                    m.satellite_id == cdm.satellite_id
+                    and not m.executed
+                    and not m.rejected
+                    and m.burn_id.startswith("AUTO-")
+                )
+            ]
+            if len(pending_auto) >= 6:
+                continue
+
             burn_time = self.current_time + timedelta(seconds=max(30, cdm.tca_seconds * 0.3))
             key = f"{cdm.satellite_id}:{burn_time.isoformat()}"
             if key in existing_burns:
@@ -286,7 +303,7 @@ class SimulationState:
             sat.last_burn_time = cmd.burn_time
             cmd.executed = True
 
-    def stream_tick(self, step_seconds: int = 20, reassess_every: int = 1) -> None:
+    def stream_tick(self, step_seconds: float = 10.0, reassess_every: int = 300) -> None:
         prev_time = self.current_time
         self._propagate_all(step_seconds)
         self.current_time = self.current_time + timedelta(seconds=step_seconds)
@@ -297,6 +314,10 @@ class SimulationState:
             self.conjunctions = assess_conjunctions(
                 satellites={k: v.state.copy() for k, v in self.satellites.items()},
                 debris={k: v.state.copy() for k, v in self.debris.items()},
+                # Fast streaming mode: cheaper horizon/sampling so live updates
+                # stay smooth and responsive for local operations.
+                horizon_seconds=1800,
+                sample_seconds=60,
             )
             self._auto_schedule_evasions()
             self._stream_ticks_since_assessment = 0
@@ -534,8 +555,10 @@ class SimulationState:
             geo = eci_to_geodetic(deb.state[:3], self.current_time)
             debris_cloud.append([deb.object_id, geo.lat_deg, geo.lon_deg, geo.alt_km])
 
+        # Keep payload bounded for low-latency local rendering.
+        recent_maneuvers = sorted(self.maneuvers[-400:], key=lambda x: x.burn_time)
         maneuvers = []
-        for m in sorted(self.maneuvers, key=lambda x: x.burn_time):
+        for m in recent_maneuvers:
             maneuvers.append(
                 {
                     "burn_id": m.burn_id,
@@ -566,7 +589,7 @@ class SimulationState:
         ]
 
         fleet_fuel = [sat.fuel_kg for sat in self.satellites.values()]
-        fleet_planned_fuel = [self.project_satellite_planned_mass(sat.object_id)[1] for sat in self.satellites.values()]
+        fleet_planned_fuel = [float(s.get("planned_fuel_kg", 0.0)) for s in satellites_payload]
         total_fuel_remaining = float(sum(fleet_fuel))
         total_planned_fuel_remaining = float(sum(fleet_planned_fuel))
         total_fuel_capacity = max(1.0, 50.0 * max(len(fleet_fuel), 1))
@@ -599,7 +622,7 @@ class SimulationState:
                     "executed": m.executed,
                     "rejected": m.rejected,
                 }
-                for m in sorted(self.maneuvers, key=lambda x: x.burn_time)
+                for m in recent_maneuvers
                 if m.executed or m.rejected
             ],
         }

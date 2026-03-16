@@ -125,6 +125,7 @@ export default function OrbitTracker3D({
   const entitiesRef = useRef<{ [key: string]: any }>({});
   const posPropsRef = useRef<{ [key: string]: any }>({});
   const previousSelectedIdRef = useRef<string | null>(null);
+  const lastSimTimeRef = useRef<number | null>(null);
   const [cesiumLoaded, setCesiumLoaded] = useState(false);
   const onSelectRef = useRef(onSelectSatellite);
 
@@ -187,6 +188,27 @@ export default function OrbitTracker3D({
     if (!viewerRef.current || !cesiumLoaded) return;
     const Cesium = (window as any).Cesium;
     const viewer = viewerRef.current;
+
+    // Keep Cesium clock in sync with backend simulation time and warp.
+    const simDate = new Date(timestamp);
+    const simTime = simDate.getTime();
+    const lastSimTime = lastSimTimeRef.current;
+    lastSimTimeRef.current = simTime;
+
+    const startTime = Cesium.JulianDate.fromDate(simDate);
+    viewer.clock.startTime = startTime.clone();
+    viewer.clock.currentTime = startTime.clone();
+    viewer.clock.shouldAnimate = true;
+    viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER;
+    viewer.clock.multiplier = 1.0;
+
+    // If simulation time jumped forward a lot (e.g., time warp or fast propagation),
+    // adjust the viewed timeline window so the scrubber/animation stay near "now".
+    if (!lastSimTime || Math.abs(simTime - lastSimTime) > 1000) {
+      const endTime = Cesium.JulianDate.addSeconds(startTime, 3600, new Cesium.JulianDate());
+      viewer.clock.stopTime = endTime.clone();
+      viewer.clockViewModel && (viewer.clockViewModel.currentTime = viewer.clock.currentTime);
+    }
 
     const activeIds = new Set<string>();
 

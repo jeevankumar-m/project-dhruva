@@ -34,8 +34,17 @@ async def orbit_stream(ws: WebSocket) -> None:
     await ws.accept()
     try:
         while True:
-            state.stream_tick(step_seconds=20 * state.time_warp_multiplier, reassess_every=3)
+            # Ultra local mode:
+            # - high refresh cadence for UI smoothness
+            # - keep each simulation chunk cheap
+            # - run conjunction reassessment less frequently to prevent stalls
+            warp = max(1, state.time_warp_multiplier)
+            step_seconds = 2.0 * warp
+            state.stream_tick(step_seconds=step_seconds, reassess_every=300)
             await ws.send_json(state.snapshot())
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.10)
     except WebSocketDisconnect:
+        return
+    except Exception:
+        # Never crash the stream worker on transient send/update failures.
         return

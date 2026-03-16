@@ -114,6 +114,8 @@ def build_router(state: SimulationState) -> APIRouter:
 
     @router.get("/visualization/snapshot")
     async def visualization_snapshot() -> dict[str, Any]:
+        # Snapshot should be read-only and fast. Simulation advancement is
+        # handled by the stream loop.
         return state.snapshot()
 
     @router.post("/debug/seed")

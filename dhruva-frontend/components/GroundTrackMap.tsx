@@ -356,7 +356,8 @@ export default function GroundTrackMap({
   }, []);
 
   const handleWheel = useCallback((evt: React.WheelEvent) => {
-    evt.preventDefault();
+    // Avoid calling preventDefault on a passive wheel listener, which
+    // causes noisy console warnings in modern browsers.
     setZoom((prev) => Math.max(1, Math.min(12, prev * (evt.deltaY < 0 ? 1.15 : 0.87))));
   }, []);
 
