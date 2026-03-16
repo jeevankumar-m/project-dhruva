@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConjunctionItem, DebrisTuple, SatelliteSnapshot } from "@/lib/types";
 
 const MU = 398600.4418;
@@ -123,6 +123,8 @@ export default function OrbitTracker3D({
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
   const entitiesRef = useRef<{ [key: string]: any }>({});
+  const posPropsRef = useRef<{ [key: string]: any }>({});
+  const previousSelectedIdRef = useRef<string | null>(null);
   const [cesiumLoaded, setCesiumLoaded] = useState(false);
   const onSelectRef = useRef(onSelectSatellite);
 
@@ -151,11 +153,11 @@ export default function OrbitTracker3D({
     if (!viewerRef.current) {
       viewerRef.current = new Cesium.Viewer(containerRef.current, {
         shouldAnimate: true,
+        selectionIndicator: true,
       });
 
       const viewer = viewerRef.current;
       viewer.scene.globe.enableLighting = true;
-      viewer.scene.globe.depthTestAgainstTerrain = true;
       
       const creditContainer = viewer.bottomContainer;
       if (creditContainer) creditContainer.style.display = "none";
@@ -172,8 +174,6 @@ export default function OrbitTracker3D({
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
     }
     
-    // Cleanup is tricky with NextJS hot reloading because destroying viewer kills the canvas
-    // We'll leave the viewer alive across re-renders. We only destroy on real unmount.
     return () => {
       if (viewerRef.current && !container.isConnected) {
         viewerRef.current.destroy();
@@ -182,6 +182,7 @@ export default function OrbitTracker3D({
     };
   }, [cesiumLoaded]);
 
+  // Update entities when data changes
   useEffect(() => {
     if (!viewerRef.current || !cesiumLoaded) return;
     const Cesium = (window as any).Cesium;
@@ -196,27 +197,37 @@ export default function OrbitTracker3D({
     );
 
     // Render Satellites
+    const clockTime = viewer.clock.currentTime.clone();
     satellites.forEach((sat) => {
       const entityId = `sat_${sat.id}`;
       activeIds.add(entityId);
 
       const isSelected = selectedSatelliteId === sat.id;
       const color = isSelected ? Cesium.Color.fromCssColorString("#22c55e") : Cesium.Color.fromCssColorString("#60a5fa");
+      const pos = Cesium.Cartesian3.fromDegrees(sat.lon, sat.lat, sat.altitude_km * 1000);
+
+      // Ensure we have a SampledPositionProperty for this entity
+      if (!posPropsRef.current[entityId]) {
+        const sampled = new Cesium.SampledPositionProperty();
+        sampled.setInterpolationOptions({
+          interpolationDegree: 1,
+          interpolationAlgorithm: Cesium.LinearApproximation,
+        });
+        sampled.forwardExtrapolationType = Cesium.ExtrapolationType.HOLD;
+        sampled.backwardExtrapolationType = Cesium.ExtrapolationType.HOLD;
+        posPropsRef.current[entityId] = sampled;
+      }
+      // Add the latest position sample at viewer's current clock time
+      posPropsRef.current[entityId].addSample(clockTime, pos);
 
       if (entitiesRef.current[entityId]) {
         const entity = entitiesRef.current[entityId];
-        const newPos = Cesium.Cartesian3.fromDegrees(sat.lon, sat.lat, sat.altitude_km * 1000);
-        if (entity.position && (entity.position as any).setValue) {
-           (entity.position as any).setValue(newPos);
-        } else {
-           entity.position = new Cesium.ConstantPositionProperty(newPos);
-        }
         if (entity.billboard) {
           entity.billboard.color = color;
-          entity.billboard.scale = isSelected ? 4.5 : 3.0;
+          entity.billboard.scale = isSelected ? 2.5 : 1.5;
         }
         
-        // Handle analytical ring if selected
+        // Handle analytical orbit ring if selected
         if (isSelected && sat.eci) {
           const points = computeOrbitEllipseCesium(sat.eci, timestamp, 300);
           if (points.length > 0) {
@@ -239,11 +250,22 @@ export default function OrbitTracker3D({
       } else {
         const entity = viewer.entities.add({
           id: entityId,
-          position: new Cesium.ConstantPositionProperty(Cesium.Cartesian3.fromDegrees(sat.lon, sat.lat, sat.altitude_km * 1000)),
+          position: posPropsRef.current[entityId],
           billboard: {
             image: "/satellite.png",
-            scale: isSelected ? 4.5 : 3.0,
+            scale: isSelected ? 2.5 : 1.5,
             color: color,
+          },
+          label: {
+            text: sat.id,
+            font: "10px sans-serif",
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            outlineWidth: 2,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            pixelOffset: new Cesium.Cartesian2(0, -20),
+            fillColor: Cesium.Color.WHITE,
+            showBackground: false,
+            show: false,
           },
           properties: {
             id: sat.id,
@@ -310,27 +332,26 @@ export default function OrbitTracker3D({
       }
     });
 
-    // Synchronize the Cesium selection indicator track with React state
-    if (selectedSatelliteId && entitiesRef.current[`sat_${selectedSatelliteId}`]) {
-      const selectedEnt = entitiesRef.current[`sat_${selectedSatelliteId}`];
-      if (viewer.selectedEntity !== selectedEnt) {
+    // Synchronize selection & tracking only when selection actually changes
+    if (selectedSatelliteId !== previousSelectedIdRef.current) {
+      if (selectedSatelliteId && entitiesRef.current[`sat_${selectedSatelliteId}`]) {
+        const selectedEnt = entitiesRef.current[`sat_${selectedSatelliteId}`];
+        viewer.trackedEntity = undefined;
         viewer.selectedEntity = selectedEnt;
-      }
-      if (viewer.trackedEntity !== selectedEnt) {
-        viewer.trackedEntity = selectedEnt;
-      }
-    } else if (!selectedSatelliteId) {
-      if (viewer.selectedEntity?.properties?.type?.getValue() === "satellite") {
+        viewer.flyTo(selectedEnt, {
+            offset: new Cesium.HeadingPitchRange(0, -Cesium.Math.PI_OVER_FOUR, 8000000),
+            duration: 1.5,
+        }).then(() => {
+            if (previousSelectedIdRef.current === selectedSatelliteId) {
+                viewer.trackedEntity = selectedEnt;
+            }
+        });
+      } else if (!selectedSatelliteId) {
         viewer.selectedEntity = undefined;
-      }
-      if (viewer.trackedEntity?.properties?.type?.getValue() === "satellite") {
         viewer.trackedEntity = undefined;
       }
+      previousSelectedIdRef.current = selectedSatelliteId;
     }
-
-    // Update camera to focus on selected satellite if we just selected it
-    // Let's add simple flyTo if needed, or stick to tracking
-    // Actually, just changing properties is enough for now. The previous 3js implementation just moved the mesh.
 
   }, [satellites, selectedSatelliteId, debrisCloud, conjunctions, timestamp, cesiumLoaded]);
 
