@@ -1,16 +1,10 @@
 "use client";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useEffect, useMemo, useRef } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Line } from "@react-three/drei";
-import * as THREE from "three";
-
-import Earth from "@/components/Earth";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { ConjunctionItem, DebrisTuple, SatelliteSnapshot } from "@/lib/types";
 
 const MU = 398600.4418;
-const EARTH_R_KM = 6378.137;
-const SCENE_SCALE = 6.371 / EARTH_R_KM;
 
 interface OrbitTracker3DProps {
   satellites: SatelliteSnapshot[];
@@ -19,16 +13,6 @@ interface OrbitTracker3DProps {
   timestamp: string;
   debrisCloud: DebrisTuple[];
   conjunctions: ConjunctionItem[];
-}
-
-function latLonToCartesian(lat: number, lon: number, radius: number): [number, number, number] {
-  const latRad = (lat * Math.PI) / 180;
-  const lonRad = (lon * Math.PI) / 180;
-  return [
-    radius * Math.cos(latRad) * Math.cos(lonRad),
-    radius * Math.sin(latRad),
-    radius * Math.cos(latRad) * Math.sin(lonRad),
-  ];
 }
 
 function cross(a: number[], b: number[]): number[] {
@@ -65,11 +49,11 @@ function gmstRadians(timestamp: string): number {
   return ((gmstDeg % 360) * Math.PI) / 180;
 }
 
-function computeOrbitEllipse(
+function computeOrbitEllipseCesium(
   eci: { x: number; y: number; z: number; vx: number; vy: number; vz: number },
   timestamp: string,
   numPoints: number = 300,
-): [number, number, number][] {
+): { x: number; y: number; z: number }[] {
   const r = [eci.x, eci.y, eci.z];
   const v = [eci.vx, eci.vy, eci.vz];
   const rMag = mag(r);
@@ -106,7 +90,7 @@ function computeOrbitEllipse(
   const sinG = Math.sin(gmst);
 
   const p = a * (1 - e * e);
-  const points: [number, number, number][] = [];
+  const points: { x: number; y: number; z: number }[] = [];
 
   for (let i = 0; i <= numPoints; i++) {
     const theta = (2 * Math.PI * i) / numPoints;
@@ -122,105 +106,10 @@ function computeOrbitEllipse(
     const yECEF = -xECI * sinG + yECI * cosG;
     const zECEF = zECI;
 
-    points.push([xECEF * SCENE_SCALE, zECEF * SCENE_SCALE, yECEF * SCENE_SCALE]);
+    points.push({ x: xECEF * 1000, y: yECEF * 1000, z: zECEF * 1000 });
   }
 
   return points;
-}
-
-function SatelliteMesh({
-  sat,
-  isSelected,
-  onSelect,
-}: {
-  sat: SatelliteSnapshot;
-  isSelected: boolean;
-  onSelect: () => void;
-}) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const targetPos = useRef(new THREE.Vector3());
-
-  useEffect(() => {
-    const altitudeScale = 6.371 + Math.max(0.15, sat.altitude_km / 1000);
-    const [x, y, z] = latLonToCartesian(sat.lat, sat.lon, altitudeScale);
-    targetPos.current.set(x, y, z);
-
-    if (meshRef.current && meshRef.current.position.lengthSq() === 0) {
-      meshRef.current.position.copy(targetPos.current);
-    }
-  }, [sat.lat, sat.lon, sat.altitude_km]);
-
-  useFrame(() => {
-    if (!meshRef.current) return;
-    meshRef.current.position.lerp(targetPos.current, 0.08);
-  });
-
-  return (
-    <mesh ref={meshRef} onClick={onSelect}>
-      <sphereGeometry args={[isSelected ? 0.18 : 0.12, 16, 16]} />
-      <meshStandardMaterial
-        color={isSelected ? "#22c55e" : "#60a5fa"}
-        emissive={isSelected ? "#14532d" : "#1e3a8a"}
-        emissiveIntensity={0.6}
-      />
-    </mesh>
-  );
-}
-
-function AnalyticalOrbitRing({
-  selectedSatelliteId,
-  satellites,
-  timestamp,
-}: {
-  selectedSatelliteId: string | null;
-  satellites: SatelliteSnapshot[];
-  timestamp: string;
-}) {
-  const orbitPoints = useMemo(() => {
-    if (!selectedSatelliteId) return [];
-    const sat = satellites.find((s) => s.id === selectedSatelliteId);
-    if (!sat?.eci) return [];
-    return computeOrbitEllipse(sat.eci, timestamp, 300);
-  }, [selectedSatelliteId, satellites, timestamp]);
-
-  if (orbitPoints.length < 2) return null;
-
-  return <Line points={orbitPoints} color="#22d3ee" lineWidth={1.5} transparent opacity={0.8} />;
-}
-
-function DebrisDots({
-  debrisCloud,
-  warningIds,
-}: {
-  debrisCloud: DebrisTuple[];
-  warningIds: Set<string>;
-}) {
-  const meshes = useMemo(() => {
-    return debrisCloud.map((deb) => {
-      const [id, lat, lon, altKm] = deb;
-      const r = 6.371 + Math.max(0.1, altKm / 1000);
-      const pos = latLonToCartesian(lat, lon, r);
-      const isWarn = warningIds.has(id);
-      return { id, pos, isWarn };
-    });
-  }, [debrisCloud, warningIds]);
-
-  return (
-    <>
-      {meshes.map((d) => (
-        <mesh key={d.id} position={d.pos}>
-          <sphereGeometry args={[d.isWarn ? 0.12 : 0.07, 8, 8]} />
-          <meshStandardMaterial
-            color={d.isWarn ? "#ef4444" : "#f87171"}
-            emissive={d.isWarn ? "#7f1d1d" : "#450a0a"}
-            emissiveIntensity={d.isWarn ? 1.0 : 0.3}
-            transparent={!d.isWarn}
-            opacity={d.isWarn ? 1.0 : 0.6}
-          />
-        </mesh>
-      ))}
-    </>
-  );
 }
 
 export default function OrbitTracker3D({
@@ -231,42 +120,226 @@ export default function OrbitTracker3D({
   debrisCloud,
   conjunctions,
 }: OrbitTracker3DProps) {
-  const warningIds = useMemo(
-    () =>
-      new Set(
-        conjunctions
-          .filter((c) => c.risk_level === "CRITICAL" || c.risk_level === "WARNING")
-          .map((c) => c.debris_id),
-      ),
-    [conjunctions],
-  );
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<any>(null);
+  const entitiesRef = useRef<{ [key: string]: any }>({});
+  const [cesiumLoaded, setCesiumLoaded] = useState(false);
+  const onSelectRef = useRef(onSelectSatellite);
+
+  useEffect(() => {
+    onSelectRef.current = onSelectSatellite;
+  }, [onSelectSatellite]);
+
+  useEffect(() => {
+    const checkCesium = setInterval(() => {
+      if (typeof window !== "undefined" && (window as any).Cesium) {
+        setCesiumLoaded(true);
+        clearInterval(checkCesium);
+      }
+    }, 100);
+
+    return () => clearInterval(checkCesium);
+  }, []);
+
+  useEffect(() => {
+    if (!cesiumLoaded || !containerRef.current) return;
+    const container = containerRef.current;
+
+    const Cesium = (window as any).Cesium;
+    (window as any).CESIUM_BASE_URL = "/cesium";
+
+    if (!viewerRef.current) {
+      viewerRef.current = new Cesium.Viewer(containerRef.current, {
+        shouldAnimate: true,
+      });
+
+      const viewer = viewerRef.current;
+      viewer.scene.globe.enableLighting = true;
+      viewer.scene.globe.depthTestAgainstTerrain = true;
+      
+      const creditContainer = viewer.bottomContainer;
+      if (creditContainer) creditContainer.style.display = "none";
+
+      const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+      handler.setInputAction((click: any) => {
+        const pickedObject = viewer.scene.pick(click.position);
+        if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.properties) {
+          const id = pickedObject.id.properties.id?.getValue();
+          if (id && pickedObject.id.properties.type?.getValue() === "satellite") {
+            onSelectRef.current(id);
+          }
+        }
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    }
+    
+    // Cleanup is tricky with NextJS hot reloading because destroying viewer kills the canvas
+    // We'll leave the viewer alive across re-renders. We only destroy on real unmount.
+    return () => {
+      if (viewerRef.current && !container.isConnected) {
+        viewerRef.current.destroy();
+        viewerRef.current = null;
+      }
+    };
+  }, [cesiumLoaded]);
+
+  useEffect(() => {
+    if (!viewerRef.current || !cesiumLoaded) return;
+    const Cesium = (window as any).Cesium;
+    const viewer = viewerRef.current;
+
+    const activeIds = new Set<string>();
+
+    const warningIds = new Set(
+      conjunctions
+        .filter((c) => c.risk_level === "CRITICAL" || c.risk_level === "WARNING")
+        .map((c) => c.debris_id)
+    );
+
+    // Render Satellites
+    satellites.forEach((sat) => {
+      const entityId = `sat_${sat.id}`;
+      activeIds.add(entityId);
+
+      const isSelected = selectedSatelliteId === sat.id;
+      const color = isSelected ? Cesium.Color.fromCssColorString("#22c55e") : Cesium.Color.fromCssColorString("#60a5fa");
+
+      if (entitiesRef.current[entityId]) {
+        const entity = entitiesRef.current[entityId];
+        const newPos = Cesium.Cartesian3.fromDegrees(sat.lon, sat.lat, sat.altitude_km * 1000);
+        if (entity.position && (entity.position as any).setValue) {
+           (entity.position as any).setValue(newPos);
+        } else {
+           entity.position = new Cesium.ConstantPositionProperty(newPos);
+        }
+        if (entity.billboard) {
+          entity.billboard.color = color;
+          entity.billboard.scale = isSelected ? 4.5 : 3.0;
+        }
+        
+        // Handle analytical ring if selected
+        if (isSelected && sat.eci) {
+          const points = computeOrbitEllipseCesium(sat.eci, timestamp, 300);
+          if (points.length > 0) {
+            const positions = points.map((p) => new Cesium.Cartesian3(p.x, p.y, p.z));
+            if (!entity.polyline) {
+              entity.polyline = new Cesium.PolylineGraphics({
+                positions: positions,
+                width: 2,
+                material: Cesium.Color.fromCssColorString("#22d3ee").withAlpha(0.6),
+              });
+            } else {
+              entity.polyline.positions = positions;
+            }
+          }
+        } else {
+          if (entity.polyline) {
+             entity.polyline = undefined;
+          }
+        }
+      } else {
+        const entity = viewer.entities.add({
+          id: entityId,
+          position: new Cesium.ConstantPositionProperty(Cesium.Cartesian3.fromDegrees(sat.lon, sat.lat, sat.altitude_km * 1000)),
+          billboard: {
+            image: "/satellite.png",
+            scale: isSelected ? 4.5 : 3.0,
+            color: color,
+          },
+          properties: {
+            id: sat.id,
+            type: "satellite",
+          },
+        });
+        
+        if (isSelected && sat.eci) {
+          const points = computeOrbitEllipseCesium(sat.eci, timestamp, 300);
+          if (points.length > 0) {
+            entity.polyline = new Cesium.PolylineGraphics({
+              positions: points.map((p) => new Cesium.Cartesian3(p.x, p.y, p.z)),
+              width: 2,
+              material: Cesium.Color.fromCssColorString("#22d3ee").withAlpha(0.6),
+            });
+          }
+        }
+
+        entitiesRef.current[entityId] = entity;
+      }
+    });
+
+    // Render Debris
+    debrisCloud.forEach((deb) => {
+      const [id, lat, lon, altKm] = deb;
+      const entityId = `deb_${id}`;
+      activeIds.add(entityId);
+
+      const isWarn = warningIds.has(id);
+      const color = isWarn ? Cesium.Color.fromCssColorString("#ef4444") : Cesium.Color.fromCssColorString("#f87171").withAlpha(0.6);
+      const pixelSize = isWarn ? 8 : 4;
+      const outlineWidth = isWarn ? 1 : 0;
+
+      if (entitiesRef.current[entityId]) {
+        const entity = entitiesRef.current[entityId];
+        entity.position = Cesium.Cartesian3.fromDegrees(lon, lat, altKm * 1000);
+        entity.point.color = color;
+        entity.point.pixelSize = pixelSize;
+        entity.point.outlineWidth = outlineWidth;
+      } else {
+        const entity = viewer.entities.add({
+          id: entityId,
+          position: Cesium.Cartesian3.fromDegrees(lon, lat, altKm * 1000),
+          point: {
+            pixelSize: pixelSize,
+            color: color,
+            outlineColor: isWarn ? Cesium.Color.WHITE : Cesium.Color.TRANSPARENT,
+            outlineWidth: outlineWidth,
+          },
+          properties: {
+            id: id,
+            type: "debris",
+          },
+        });
+        entitiesRef.current[entityId] = entity;
+      }
+    });
+
+    // Remove old entities
+    Object.keys(entitiesRef.current).forEach((key) => {
+      if (!activeIds.has(key)) {
+        viewer.entities.remove(entitiesRef.current[key]);
+        delete entitiesRef.current[key];
+      }
+    });
+
+    // Synchronize the Cesium selection indicator track with React state
+    if (selectedSatelliteId && entitiesRef.current[`sat_${selectedSatelliteId}`]) {
+      const selectedEnt = entitiesRef.current[`sat_${selectedSatelliteId}`];
+      if (viewer.selectedEntity !== selectedEnt) {
+        viewer.selectedEntity = selectedEnt;
+      }
+      if (viewer.trackedEntity !== selectedEnt) {
+        viewer.trackedEntity = selectedEnt;
+      }
+    } else if (!selectedSatelliteId) {
+      if (viewer.selectedEntity?.properties?.type?.getValue() === "satellite") {
+        viewer.selectedEntity = undefined;
+      }
+      if (viewer.trackedEntity?.properties?.type?.getValue() === "satellite") {
+        viewer.trackedEntity = undefined;
+      }
+    }
+
+    // Update camera to focus on selected satellite if we just selected it
+    // Let's add simple flyTo if needed, or stick to tracking
+    // Actually, just changing properties is enough for now. The previous 3js implementation just moved the mesh.
+
+  }, [satellites, selectedSatelliteId, debrisCloud, conjunctions, timestamp, cesiumLoaded]);
 
   return (
-    <div className="h-full border border-slate-800 bg-slate-950 overflow-hidden">
-      <div className="absolute z-10 mt-3 ml-3 text-xs text-slate-200">
-        Worldwide Perspective - 3D Orbit Tracker
+    <div className="h-full border border-slate-800 bg-slate-950 overflow-hidden relative">
+      <div className="absolute z-10 top-3 left-3 text-xs text-slate-200 bg-black/50 p-1 rounded">
+        Worldwide Perspective - 3D Orbit Tracker (Cesium)
       </div>
-      <Canvas camera={{ position: [0, 0, 22], fov: 45 }}>
-        <color attach="background" args={["#020617"]} />
-        <ambientLight intensity={0.8} />
-        <directionalLight position={[12, 8, 10]} intensity={1.4} />
-
-        <Earth />
-
-        <AnalyticalOrbitRing selectedSatelliteId={selectedSatelliteId} satellites={satellites} timestamp={timestamp} />
-        <DebrisDots debrisCloud={debrisCloud} warningIds={warningIds} />
-
-        {satellites.map((sat) => (
-          <SatelliteMesh
-            key={sat.id}
-            sat={sat}
-            isSelected={sat.id === selectedSatelliteId}
-            onSelect={() => onSelectSatellite(sat.id)}
-          />
-        ))}
-
-        <OrbitControls enablePan={false} minDistance={10} maxDistance={40} />
-      </Canvas>
+      <div ref={containerRef} className="w-full h-full" />
     </div>
   );
 }
