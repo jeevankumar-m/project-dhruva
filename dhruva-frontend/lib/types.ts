@@ -59,6 +59,7 @@ export interface SnapshotPayload {
   maneuvers: ManeuverItem[];
   ground_stations?: GroundStationSnapshot[];
   burn_logs?: BurnLogEntry[];
+  blackout_status?: BlackoutStatusItem[];
   counts?: {
     satellites: number;
     debris: number;
@@ -94,4 +95,13 @@ export interface BurnLogEntry {
   delta_v_mps: number;
   executed: boolean;
   rejected: boolean;
+}
+
+export interface BlackoutStatusItem {
+  satellite_id: string;
+  in_blackout: boolean;
+  estimated_recovery_seconds: number | null;
+  estimated_recovery_timestamp: string | null;
+  lat: number;
+  lon: number;
 }

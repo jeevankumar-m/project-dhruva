@@ -16,6 +16,8 @@ MAX_BURN_MPS = 15.0
 THERMAL_COOLDOWN_SECONDS = 600
 MIN_COMMAND_LATENCY_SECONDS = 10
 CRITICAL_COLLISION_KM = 0.1
+BLACKOUT_LOOKAHEAD_SECONDS = 1800
+BLACKOUT_SAMPLE_SECONDS = 60
 
 
 @dataclass
@@ -34,6 +36,8 @@ class SimulationState:
         self.conjunctions: list[ConjunctionWarning] = []
         self.total_collisions_avoided = 0
         self._stream_ticks_since_assessment = 0
+        self.blackout_status: list[dict] = []
+        self._blackout_ticks_since_update = 9999
 
         gs_csv = root_path / "data" / "ground_stations.csv"
         self.ground_stations = GroundStationNetwork.from_csv(gs_csv)
@@ -97,6 +101,8 @@ class SimulationState:
         self.maneuvers.clear()
         self.conjunctions.clear()
         self.total_collisions_avoided = 0
+        self.blackout_status = []
+        self._blackout_ticks_since_update = 9999
 
         for i in range(satellite_count):
             plane = i % 5
@@ -309,6 +315,7 @@ class SimulationState:
         self.current_time = self.current_time + timedelta(seconds=step_seconds)
         self._execute_stream_maneuvers(prev_time, self.current_time)
         self._stream_ticks_since_assessment += 1
+        self._blackout_ticks_since_update += 1
 
         if self._stream_ticks_since_assessment >= reassess_every:
             self.conjunctions = assess_conjunctions(
@@ -321,6 +328,38 @@ class SimulationState:
             )
             self._auto_schedule_evasions()
             self._stream_ticks_since_assessment = 0
+
+        if self._blackout_ticks_since_update >= 20:
+            self._update_blackout_status()
+            self._blackout_ticks_since_update = 0
+
+    def _estimate_blackout_recovery_seconds(self, sat_state: np.ndarray) -> float | None:
+        probe = sat_state.copy()
+        for t in range(BLACKOUT_SAMPLE_SECONDS, BLACKOUT_LOOKAHEAD_SECONDS + BLACKOUT_SAMPLE_SECONDS, BLACKOUT_SAMPLE_SECONDS):
+            probe = rk4_step(probe, BLACKOUT_SAMPLE_SECONDS)
+            if self.ground_stations.has_line_of_sight(probe[:3], self.current_time + timedelta(seconds=t)):
+                return float(t)
+        return None
+
+    def _update_blackout_status(self) -> None:
+        status: list[dict] = []
+        for sat in self.satellites.values():
+            has_los = self.ground_stations.has_line_of_sight(sat.state[:3], self.current_time)
+            eta_sec = None if has_los else self._estimate_blackout_recovery_seconds(sat.state)
+            geo = eci_to_geodetic(sat.state[:3], self.current_time)
+            status.append(
+                {
+                    "satellite_id": sat.object_id,
+                    "in_blackout": not has_los,
+                    "estimated_recovery_seconds": eta_sec,
+                    "estimated_recovery_timestamp": (
+                        (self.current_time + timedelta(seconds=eta_sec)).isoformat() if eta_sec is not None else None
+                    ),
+                    "lat": geo.lat_deg,
+                    "lon": geo.lon_deg,
+                }
+            )
+        self.blackout_status = status
 
     def ingest_object(self, object_id: str, object_type: str, state: np.ndarray) -> None:
         norm_type = object_type.upper()
@@ -514,9 +553,15 @@ class SimulationState:
         for sat in self.satellites.values():
             sat.collisions_avoided += avoided
 
+        self._update_blackout_status()
+        self._blackout_ticks_since_update = 0
+
         return ExecutionSummary(maneuvers_executed=maneuvers_executed, collisions_detected=collisions)
 
     def snapshot(self) -> dict:
+        if not self.blackout_status:
+            self._update_blackout_status()
+
         satellites_payload = []
         for sat in self.satellites.values():
             geo = eci_to_geodetic(sat.state[:3], self.current_time)
@@ -625,4 +670,5 @@ class SimulationState:
                 for m in recent_maneuvers
                 if m.executed or m.rejected
             ],
+            "blackout_status": self.blackout_status,
         }

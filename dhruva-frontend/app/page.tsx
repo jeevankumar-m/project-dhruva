@@ -10,6 +10,7 @@ import ManeuverTimeline from "@/components/ManeuverTimeline";
 import SatelliteDetail from "@/components/SatelliteDetail";
 import { useSnapshotContext } from "@/components/SnapshotProvider";
 import TelemetryHeatmaps from "@/components/TelemetryHeatmaps";
+import BlackoutPanel from "@/components/BlackoutPanel";
 
 function Dashboard() {
   const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
@@ -76,15 +77,23 @@ function Dashboard() {
                   timestamp={snapshot?.timestamp ?? new Date().toISOString()}
                   debrisCloud={snapshot?.debris_cloud ?? []}
                   conjunctions={snapshot?.conjunctions ?? []}
+                  blackoutStatus={snapshot?.blackout_status ?? []}
                 />
               )}
             </div>
           </div>
 
           <div className="w-60 shrink-0 flex flex-col gap-2">
-            <div className="h-48 shrink-0">
+            <div className="h-40 shrink-0">
               <ConstellationList
                 satellites={satellites}
+                selectedSatelliteId={selectedSatelliteId}
+                onSelectSatellite={setSelectedSatelliteId}
+              />
+            </div>
+            <div className="h-40 shrink-0">
+              <BlackoutPanel
+                blackoutStatus={snapshot?.blackout_status ?? []}
                 selectedSatelliteId={selectedSatelliteId}
                 onSelectSatellite={setSelectedSatelliteId}
               />

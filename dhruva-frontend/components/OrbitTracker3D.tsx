@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useEffect, useRef, useState } from "react";
-import { ConjunctionItem, DebrisTuple, SatelliteSnapshot } from "@/lib/types";
+import { BlackoutStatusItem, ConjunctionItem, DebrisTuple, SatelliteSnapshot } from "@/lib/types";
 
 const MU = 398600.4418;
 
@@ -13,6 +13,7 @@ interface OrbitTracker3DProps {
   timestamp: string;
   debrisCloud: DebrisTuple[];
   conjunctions: ConjunctionItem[];
+  blackoutStatus: BlackoutStatusItem[];
 }
 
 function cross(a: number[], b: number[]): number[] {
@@ -119,13 +120,20 @@ export default function OrbitTracker3D({
   timestamp,
   debrisCloud,
   conjunctions,
+  blackoutStatus,
 }: OrbitTracker3DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<any>(null);
   const entitiesRef = useRef<{ [key: string]: any }>({});
-  const posPropsRef = useRef<{ [key: string]: any }>({});
   const previousSelectedIdRef = useRef<string | null>(null);
-  const lastSimTimeRef = useRef<number | null>(null);
+  const selectedOrbitEntityRef = useRef<any>(null);
+  const blackoutPrimitiveRef = useRef<any>(null);
+  const blackoutPrimitiveKeyRef = useRef<string>("");
+  const orbitCacheRef = useRef<{
+    satId: string | null;
+    bucket: number;
+    positions: any[] | null;
+  }>({ satId: null, bucket: -1, positions: null });
   const [cesiumLoaded, setCesiumLoaded] = useState(false);
   const onSelectRef = useRef(onSelectSatellite);
 
@@ -153,8 +161,9 @@ export default function OrbitTracker3D({
 
     if (!viewerRef.current) {
       viewerRef.current = new Cesium.Viewer(containerRef.current, {
-        shouldAnimate: true,
-        selectionIndicator: true,
+        shouldAnimate: false,
+        selectionIndicator: false,
+        infoBox: false,
       });
 
       const viewer = viewerRef.current;
@@ -162,6 +171,8 @@ export default function OrbitTracker3D({
       
       const creditContainer = viewer.bottomContainer;
       if (creditContainer) creditContainer.style.display = "none";
+      viewer.scene.requestRenderMode = true;
+      viewer.scene.maximumRenderTimeChange = 0;
 
       const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
       handler.setInputAction((click: any) => {
@@ -177,6 +188,10 @@ export default function OrbitTracker3D({
     
     return () => {
       if (viewerRef.current && !container.isConnected) {
+        if (blackoutPrimitiveRef.current) {
+          viewerRef.current.scene.primitives.remove(blackoutPrimitiveRef.current);
+          blackoutPrimitiveRef.current = null;
+        }
         viewerRef.current.destroy();
         viewerRef.current = null;
       }
@@ -189,26 +204,12 @@ export default function OrbitTracker3D({
     const Cesium = (window as any).Cesium;
     const viewer = viewerRef.current;
 
-    // Keep Cesium clock in sync with backend simulation time and warp.
+    // Keep Cesium timeline display aligned to backend simulation timestamp.
     const simDate = new Date(timestamp);
-    const simTime = simDate.getTime();
-    const lastSimTime = lastSimTimeRef.current;
-    lastSimTimeRef.current = simTime;
-
     const startTime = Cesium.JulianDate.fromDate(simDate);
-    viewer.clock.startTime = startTime.clone();
     viewer.clock.currentTime = startTime.clone();
-    viewer.clock.shouldAnimate = true;
-    viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER;
-    viewer.clock.multiplier = 1.0;
-
-    // If simulation time jumped forward a lot (e.g., time warp or fast propagation),
-    // adjust the viewed timeline window so the scrubber/animation stay near "now".
-    if (!lastSimTime || Math.abs(simTime - lastSimTime) > 1000) {
-      const endTime = Cesium.JulianDate.addSeconds(startTime, 3600, new Cesium.JulianDate());
-      viewer.clock.stopTime = endTime.clone();
-      viewer.clockViewModel && (viewer.clockViewModel.currentTime = viewer.clock.currentTime);
-    }
+    viewer.clock.shouldAnimate = false;
+    viewer.scene.requestRender();
 
     const activeIds = new Set<string>();
 
@@ -219,7 +220,6 @@ export default function OrbitTracker3D({
     );
 
     // Render Satellites
-    const clockTime = viewer.clock.currentTime.clone();
     satellites.forEach((sat) => {
       const entityId = `sat_${sat.id}`;
       activeIds.add(entityId);
@@ -228,51 +228,18 @@ export default function OrbitTracker3D({
       const color = isSelected ? Cesium.Color.fromCssColorString("#22c55e") : Cesium.Color.fromCssColorString("#60a5fa");
       const pos = Cesium.Cartesian3.fromDegrees(sat.lon, sat.lat, sat.altitude_km * 1000);
 
-      // Ensure we have a SampledPositionProperty for this entity
-      if (!posPropsRef.current[entityId]) {
-        const sampled = new Cesium.SampledPositionProperty();
-        sampled.setInterpolationOptions({
-          interpolationDegree: 1,
-          interpolationAlgorithm: Cesium.LinearApproximation,
-        });
-        sampled.forwardExtrapolationType = Cesium.ExtrapolationType.HOLD;
-        sampled.backwardExtrapolationType = Cesium.ExtrapolationType.HOLD;
-        posPropsRef.current[entityId] = sampled;
-      }
-      // Add the latest position sample at viewer's current clock time
-      posPropsRef.current[entityId].addSample(clockTime, pos);
-
       if (entitiesRef.current[entityId]) {
         const entity = entitiesRef.current[entityId];
+        entity.position = pos;
         if (entity.billboard) {
           entity.billboard.color = color;
           entity.billboard.scale = isSelected ? 2.5 : 1.5;
         }
         
-        // Handle analytical orbit ring if selected
-        if (isSelected && sat.eci) {
-          const points = computeOrbitEllipseCesium(sat.eci, timestamp, 300);
-          if (points.length > 0) {
-            const positions = points.map((p) => new Cesium.Cartesian3(p.x, p.y, p.z));
-            if (!entity.polyline) {
-              entity.polyline = new Cesium.PolylineGraphics({
-                positions: positions,
-                width: 2,
-                material: Cesium.Color.fromCssColorString("#22d3ee").withAlpha(0.6),
-              });
-            } else {
-              entity.polyline.positions = positions;
-            }
-          }
-        } else {
-          if (entity.polyline) {
-             entity.polyline = undefined;
-          }
-        }
       } else {
         const entity = viewer.entities.add({
           id: entityId,
-          position: posPropsRef.current[entityId],
+          position: pos,
           billboard: {
             image: "/satellite.png",
             scale: isSelected ? 2.5 : 1.5,
@@ -294,18 +261,6 @@ export default function OrbitTracker3D({
             type: "satellite",
           },
         });
-        
-        if (isSelected && sat.eci) {
-          const points = computeOrbitEllipseCesium(sat.eci, timestamp, 300);
-          if (points.length > 0) {
-            entity.polyline = new Cesium.PolylineGraphics({
-              positions: points.map((p) => new Cesium.Cartesian3(p.x, p.y, p.z)),
-              width: 2,
-              material: Cesium.Color.fromCssColorString("#22d3ee").withAlpha(0.6),
-            });
-          }
-        }
-
         entitiesRef.current[entityId] = entity;
       }
     });
@@ -346,6 +301,89 @@ export default function OrbitTracker3D({
       }
     });
 
+    // Stable selected orbit path (single shared entity) to avoid flicker.
+    const selectedSat = selectedSatelliteId
+      ? satellites.find((s) => s.id === selectedSatelliteId)
+      : null;
+    if (selectedSat?.eci) {
+      const timeBucket = Math.floor(new Date(timestamp).getTime() / 15000);
+      const shouldRecompute =
+        orbitCacheRef.current.satId !== selectedSat.id ||
+        orbitCacheRef.current.bucket !== timeBucket ||
+        orbitCacheRef.current.positions === null;
+
+      if (shouldRecompute) {
+        const points = computeOrbitEllipseCesium(selectedSat.eci, timestamp, 220);
+        orbitCacheRef.current = {
+          satId: selectedSat.id,
+          bucket: timeBucket,
+          positions: points.map((p) => new Cesium.Cartesian3(p.x, p.y, p.z)),
+        };
+      }
+
+      if (!selectedOrbitEntityRef.current) {
+        selectedOrbitEntityRef.current = viewer.entities.add({
+          id: "__selected_orbit_path__",
+          polyline: {
+            positions: orbitCacheRef.current.positions,
+            width: 2,
+            material: Cesium.Color.fromCssColorString("#22d3ee").withAlpha(0.75),
+            clampToGround: false,
+          },
+        });
+      } else if (selectedOrbitEntityRef.current.polyline) {
+        selectedOrbitEntityRef.current.polyline.positions = orbitCacheRef.current.positions;
+      }
+      activeIds.add("__selected_orbit_path__");
+    } else if (selectedOrbitEntityRef.current) {
+      viewer.entities.remove(selectedOrbitEntityRef.current);
+      selectedOrbitEntityRef.current = null;
+      orbitCacheRef.current = { satId: null, bucket: -1, positions: null };
+    }
+
+    // Blackout zones using Cesium Geometry + Appearance primitives.
+    const blackoutSatIds = blackoutStatus
+      .filter((b) => b.in_blackout)
+      .map((b) => b.satellite_id)
+      .sort();
+    const blackoutKey = blackoutSatIds.join("|");
+    if (blackoutKey !== blackoutPrimitiveKeyRef.current) {
+      if (blackoutPrimitiveRef.current) {
+        viewer.scene.primitives.remove(blackoutPrimitiveRef.current);
+        blackoutPrimitiveRef.current = null;
+      }
+      blackoutPrimitiveKeyRef.current = blackoutKey;
+      if (blackoutSatIds.length > 0) {
+        const satMap = new Map(satellites.map((s) => [s.id, s]));
+        const instances = blackoutSatIds
+          .map((id) => satMap.get(id))
+          .filter((s): s is SatelliteSnapshot => Boolean(s))
+          .map((sat) => new Cesium.GeometryInstance({
+            geometry: new Cesium.CircleGeometry({
+              center: Cesium.Cartesian3.fromDegrees(sat.lon, sat.lat, 0),
+              radius: 450000.0,
+              height: 0.0,
+              vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
+            }),
+            attributes: {
+              color: Cesium.ColorGeometryInstanceAttribute.fromColor(
+                Cesium.Color.fromCssColorString("#ef4444").withAlpha(0.22)
+              ),
+            },
+          }));
+        if (instances.length > 0) {
+          blackoutPrimitiveRef.current = viewer.scene.primitives.add(new Cesium.Primitive({
+            geometryInstances: instances,
+            appearance: new Cesium.PerInstanceColorAppearance({
+              translucent: true,
+              closed: false,
+            }),
+            asynchronous: false,
+          }));
+        }
+      }
+    }
+
     // Remove old entities
     Object.keys(entitiesRef.current).forEach((key) => {
       if (!activeIds.has(key)) {
@@ -358,15 +396,12 @@ export default function OrbitTracker3D({
     if (selectedSatelliteId !== previousSelectedIdRef.current) {
       if (selectedSatelliteId && entitiesRef.current[`sat_${selectedSatelliteId}`]) {
         const selectedEnt = entitiesRef.current[`sat_${selectedSatelliteId}`];
+        viewer.selectedEntity = undefined;
         viewer.trackedEntity = undefined;
-        viewer.selectedEntity = selectedEnt;
-        viewer.flyTo(selectedEnt, {
-            offset: new Cesium.HeadingPitchRange(0, -Cesium.Math.PI_OVER_FOUR, 8000000),
-            duration: 1.5,
-        }).then(() => {
-            if (previousSelectedIdRef.current === selectedSatelliteId) {
-                viewer.trackedEntity = selectedEnt;
-            }
+        void viewer.zoomTo(selectedEnt, new Cesium.HeadingPitchRange(0, -Cesium.Math.PI_OVER_FOUR, 14000000)).then(() => {
+          if (previousSelectedIdRef.current === selectedSatelliteId) {
+            viewer.trackedEntity = selectedEnt;
+          }
         });
       } else if (!selectedSatelliteId) {
         viewer.selectedEntity = undefined;
@@ -375,7 +410,7 @@ export default function OrbitTracker3D({
       previousSelectedIdRef.current = selectedSatelliteId;
     }
 
-  }, [satellites, selectedSatelliteId, debrisCloud, conjunctions, timestamp, cesiumLoaded]);
+  }, [satellites, selectedSatelliteId, debrisCloud, conjunctions, blackoutStatus, timestamp, cesiumLoaded]);
 
   return (
     <div className="h-full border border-slate-800 bg-slate-950 overflow-hidden relative">
