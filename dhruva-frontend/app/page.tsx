@@ -30,9 +30,9 @@ function Dashboard() {
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-2 h-full">
-        <div className="flex gap-2 flex-1 min-h-0">
-          <div className="w-64 shrink-0 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 min-h-full">
+        <div className="flex gap-2 flex-1 min-h-0 flex-col xl:flex-row">
+          <div className="w-full xl:w-64 xl:shrink-0 flex flex-col gap-2 min-h-[22rem] xl:min-h-0">
             <div className="flex-1 min-h-0">
               <TelemetryHeatmaps satellites={satellites} metricsHistory={metricsHistory} />
             </div>
@@ -41,7 +41,7 @@ function Dashboard() {
             </div>
           </div>
 
-          <div className="flex-1 flex flex-col gap-1 min-w-0">
+          <div className="flex-1 flex flex-col gap-1 min-w-0 min-h-[26rem] xl:min-h-0">
             <div className="flex items-center justify-end shrink-0">
               <div className="inline-flex border border-slate-700 bg-slate-900 p-0.5 text-xs">
                 <button
@@ -83,15 +83,15 @@ function Dashboard() {
             </div>
           </div>
 
-          <div className="w-60 shrink-0 flex flex-col gap-2">
-            <div className="h-40 shrink-0">
+          <div className="w-full xl:w-60 xl:shrink-0 flex flex-col gap-2 min-h-[22rem] xl:min-h-0">
+            <div className="h-40 xl:h-36 shrink-0">
               <ConstellationList
                 satellites={satellites}
                 selectedSatelliteId={selectedSatelliteId}
                 onSelectSatellite={setSelectedSatelliteId}
               />
             </div>
-            <div className="h-40 shrink-0">
+            <div className="h-40 xl:h-36 shrink-0">
               <BlackoutPanel
                 blackoutStatus={snapshot?.blackout_status ?? []}
                 selectedSatelliteId={selectedSatelliteId}
@@ -104,7 +104,7 @@ function Dashboard() {
           </div>
         </div>
 
-        <div className="h-36 shrink-0">
+        <div className="h-32 xl:h-36 shrink-0 min-w-0">
           <ManeuverTimeline maneuvers={snapshot?.maneuvers ?? []} nowIso={snapshot?.timestamp ?? new Date().toISOString()} />
         </div>
       </div>
