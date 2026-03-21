@@ -45,6 +45,7 @@ The platform has two primary execution modes:
 - Blackout status estimation and recovery ETA.
 - Autonomous graveyard routing based on low-fuel threshold.
 - Mission metrics: fuel usage, uptime, outage accumulation, and avoidance efficiency.
+- Frontend dashboard with 2D Mercator ground track (90-min historical trail + dashed 90-min predicted trajectory, accurate terminator line), 3D Cesium orbit view, conjunction bullseye plot, maneuver Gantt timeline, and dedicated fleet fuel page.
 
 ---
 
@@ -171,9 +172,18 @@ npm install
 npm run dev
 ```
 
-Default URL:
+Default URL: `http://localhost:3000`
 
-- `http://localhost:3000`
+### Frontend Pages
+
+| Route | Description |
+|---|---|
+| `/` | Main dashboard — ground track map (2D/3D), conjunction bullseye, maneuver timeline, satellite detail |
+| `/fuel` | Fleet fuel — per-satellite propellant gauges, ∆v vs collisions avoided chart, mission scoring |
+| `/reports` | Burn logs — full maneuver history |
+| `/graveyard` | Graveyard orbit — end-of-life satellites |
+| `/alerts` | CDM alerts — active conjunction warnings |
+| `/analytics` | Analytics — fleet-level trends and conjunction table |
 
 ---
 

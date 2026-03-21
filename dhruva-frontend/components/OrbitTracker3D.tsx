@@ -129,7 +129,6 @@ export default function OrbitTracker3D({
   const selectedOrbitEntityRef = useRef<any>(null);
   const blackoutPrimitiveRef = useRef<any>(null);
   const blackoutPrimitiveKeyRef = useRef<string>("");
-  const lastClockUpdateRef = useRef<number>(0);
   const orbitCacheRef = useRef<{
     satId: string | null;
     bucket: number;
@@ -162,14 +161,15 @@ export default function OrbitTracker3D({
 
     if (!viewerRef.current) {
       viewerRef.current = new Cesium.Viewer(containerRef.current, {
-        shouldAnimate: false,
+        shouldAnimate: true,
         selectionIndicator: false,
         infoBox: false,
         useDefaultRenderLoop: true,
       });
 
       const viewer = viewerRef.current;
-      viewer.scene.globe.enableLighting = true;
+      // Disable lighting to eliminate sun-position jitter when clock updates
+      viewer.scene.globe.enableLighting = false;
       viewer.scene.screenSpaceCameraController.enableZoom = true;
       viewer.scene.screenSpaceCameraController.minimumZoomDistance = 10.0;
       viewer.scene.screenSpaceCameraController.maximumZoomDistance = 1.0e9;
@@ -215,17 +215,12 @@ export default function OrbitTracker3D({
     const Cesium = (window as any).Cesium;
     const viewer = viewerRef.current;
 
-    // Keep Cesium timeline display aligned to backend simulation timestamp,
-    // but throttle updates to reduce jitter while the user rotates.
+    // Advance Cesium clock to match simulation timestamp so SampledPositionProperty
+    // interpolation works correctly between snapshot updates.
     const simDate = new Date(timestamp);
-    const simMillis = simDate.getTime();
-    if (simMillis - lastClockUpdateRef.current > 2000) {
-      const startTime = Cesium.JulianDate.fromDate(simDate);
-      viewer.clock.currentTime = startTime.clone();
-      lastClockUpdateRef.current = simMillis;
-    }
+    const simJulian = Cesium.JulianDate.fromDate(simDate);
+    viewer.clock.currentTime = simJulian.clone();
     viewer.clock.shouldAnimate = false;
-    viewer.scene.requestRender();
 
     const activeIds = new Set<string>();
 
@@ -235,7 +230,7 @@ export default function OrbitTracker3D({
         .map((c) => c.debris_id)
     );
 
-    // Render Satellites
+    // Render Satellites using SampledPositionProperty for smooth interpolation
     satellites.forEach((sat) => {
       const entityId = `sat_${sat.id}`;
       activeIds.add(entityId);
@@ -246,16 +241,22 @@ export default function OrbitTracker3D({
 
       if (entitiesRef.current[entityId]) {
         const entity = entitiesRef.current[entityId];
-        entity.position = pos;
+        // Add new sample to the existing SampledPositionProperty
+        entity.position.addSample(simJulian, pos);
         if (entity.billboard) {
           entity.billboard.color = color;
           entity.billboard.scale = isSelected ? 2.5 : 1.5;
         }
-        
       } else {
+        const sampledPos = new Cesium.SampledPositionProperty();
+        sampledPos.addSample(simJulian, pos);
+        sampledPos.setInterpolationOptions({
+          interpolationAlgorithm: Cesium.LinearApproximation,
+          interpolationDegree: 1,
+        });
         const entity = viewer.entities.add({
           id: entityId,
-          position: pos,
+          position: sampledPos,
           billboard: {
             image: "/satellite.png",
             scale: isSelected ? 2.5 : 1.5,
@@ -281,7 +282,7 @@ export default function OrbitTracker3D({
       }
     });
 
-    // Render Debris
+    // Render Debris (static positions, only update warning state)
     debrisCloud.forEach((deb) => {
       const [id, lat, lon, altKm] = deb;
       const entityId = `deb_${id}`;
@@ -290,14 +291,12 @@ export default function OrbitTracker3D({
       const isWarn = warningIds.has(id);
       const color = isWarn ? Cesium.Color.fromCssColorString("#ef4444") : Cesium.Color.fromCssColorString("#f87171").withAlpha(0.6);
       const pixelSize = isWarn ? 8 : 4;
-      const outlineWidth = isWarn ? 1 : 0;
 
       if (entitiesRef.current[entityId]) {
+        // Only update color/size, not position (reduces jitter from constant updates)
         const entity = entitiesRef.current[entityId];
-        entity.position = Cesium.Cartesian3.fromDegrees(lon, lat, altKm * 1000);
         entity.point.color = color;
         entity.point.pixelSize = pixelSize;
-        entity.point.outlineWidth = outlineWidth;
       } else {
         const entity = viewer.entities.add({
           id: entityId,
@@ -306,12 +305,9 @@ export default function OrbitTracker3D({
             pixelSize: pixelSize,
             color: color,
             outlineColor: isWarn ? Cesium.Color.WHITE : Cesium.Color.TRANSPARENT,
-            outlineWidth: outlineWidth,
+            outlineWidth: isWarn ? 1 : 0,
           },
-          properties: {
-            id: id,
-            type: "debris",
-          },
+          properties: { id, type: "debris" },
         });
         entitiesRef.current[entityId] = entity;
       }
