@@ -464,6 +464,7 @@ class SimulationState:
                 # stay smooth and responsive for local operations.
                 horizon_seconds=1800,
                 sample_seconds=60,
+                method="grid",
             )
             self._auto_schedule_evasions()
             self._stream_ticks_since_assessment = 0
@@ -779,7 +780,11 @@ class SimulationState:
         self.conjunctions = assess_conjunctions(
             satellites={k: v.state.copy() for k, v in self.satellites.items()},
             debris={k: v.state.copy() for k, v in self.debris.items()},
+            method="kdtree",
         )
+        # When running a "grader style" tick, also perform autonomous planning
+        # based on the newly assessed conjunction warnings.
+        self._auto_schedule_evasions()
 
         collisions = sum(1 for c in self.conjunctions if c.miss_distance_km < CRITICAL_COLLISION_KM)
         avoided = sum(1 for c in self.conjunctions if c.risk_level in {"WARNING", "CRITICAL"})
