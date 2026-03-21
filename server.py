@@ -40,7 +40,9 @@ async def orbit_stream(ws: WebSocket) -> None:
             # - run conjunction reassessment less frequently to prevent stalls
             warp = max(1, state.time_warp_multiplier)
             step_seconds = 2.0 * warp
-            state.stream_tick(step_seconds=step_seconds, reassess_every=300)
+            # Reassess often enough that Bullseye updates feel "live".
+            # Keep this relatively small, but not so small that the CA stalls.
+            state.stream_tick(step_seconds=step_seconds, reassess_every=20)
             await ws.send_json(state.snapshot())
             await asyncio.sleep(0.10)
     except WebSocketDisconnect:

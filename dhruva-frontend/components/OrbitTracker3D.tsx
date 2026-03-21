@@ -129,6 +129,7 @@ export default function OrbitTracker3D({
   const selectedOrbitEntityRef = useRef<any>(null);
   const blackoutPrimitiveRef = useRef<any>(null);
   const blackoutPrimitiveKeyRef = useRef<string>("");
+  const lastClockUpdateRef = useRef<number>(0);
   const orbitCacheRef = useRef<{
     satId: string | null;
     bucket: number;
@@ -164,15 +165,22 @@ export default function OrbitTracker3D({
         shouldAnimate: false,
         selectionIndicator: false,
         infoBox: false,
+        useDefaultRenderLoop: true,
       });
 
       const viewer = viewerRef.current;
       viewer.scene.globe.enableLighting = true;
+      viewer.scene.screenSpaceCameraController.enableZoom = true;
+      viewer.scene.screenSpaceCameraController.minimumZoomDistance = 10.0;
+      viewer.scene.screenSpaceCameraController.maximumZoomDistance = 1.0e9;
+      viewer.scene.screenSpaceCameraController.enableRotate = true;
+      viewer.scene.screenSpaceCameraController.enableTranslate = true;
+      viewer.scene.screenSpaceCameraController.enableTilt = true;
       
       const creditContainer = viewer.bottomContainer;
       if (creditContainer) creditContainer.style.display = "none";
-      viewer.scene.requestRenderMode = true;
-      viewer.scene.maximumRenderTimeChange = 0;
+      // Keep Cesium responsive to wheel/mouse input.
+      viewer.scene.requestRenderMode = false;
 
       const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
       handler.setInputAction((click: any) => {
@@ -184,6 +192,9 @@ export default function OrbitTracker3D({
           }
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+      // Do not add custom camera interaction handlers here.
+      // Cesium's default mouse/touch controls should remain stable.
     }
     
     return () => {
@@ -204,10 +215,15 @@ export default function OrbitTracker3D({
     const Cesium = (window as any).Cesium;
     const viewer = viewerRef.current;
 
-    // Keep Cesium timeline display aligned to backend simulation timestamp.
+    // Keep Cesium timeline display aligned to backend simulation timestamp,
+    // but throttle updates to reduce jitter while the user rotates.
     const simDate = new Date(timestamp);
-    const startTime = Cesium.JulianDate.fromDate(simDate);
-    viewer.clock.currentTime = startTime.clone();
+    const simMillis = simDate.getTime();
+    if (simMillis - lastClockUpdateRef.current > 2000) {
+      const startTime = Cesium.JulianDate.fromDate(simDate);
+      viewer.clock.currentTime = startTime.clone();
+      lastClockUpdateRef.current = simMillis;
+    }
     viewer.clock.shouldAnimate = false;
     viewer.scene.requestRender();
 
@@ -395,10 +411,19 @@ export default function OrbitTracker3D({
     // Synchronize selection & tracking only when selection actually changes
     if (selectedSatelliteId !== previousSelectedIdRef.current) {
       if (selectedSatelliteId && entitiesRef.current[`sat_${selectedSatelliteId}`]) {
-        const selectedEnt = entitiesRef.current[`sat_${selectedSatelliteId}`];
         viewer.selectedEntity = undefined;
-        // Preserve the user's current camera distance/zoom and only switch tracking target.
-        viewer.trackedEntity = selectedEnt;
+        // Important: do NOT use trackedEntity; Cesium's tracking overrides wheel zoom.
+        viewer.trackedEntity = undefined;
+
+        // Re-orient the camera once so the selected satellite is centered,
+        // while preserving the current camera distance (zoom).
+        const selSat = satellites.find((s) => s.id === selectedSatelliteId);
+        if (selSat) {
+          const target = Cesium.Cartesian3.fromDegrees(selSat.lon, selSat.lat, selSat.altitude_km * 1000);
+          const offset = Cesium.Cartesian3.subtract(viewer.camera.position, target, new Cesium.Cartesian3());
+          viewer.camera.lookAt(target, offset);
+          viewer.scene.requestRender();
+        }
       } else if (!selectedSatelliteId) {
         viewer.selectedEntity = undefined;
         viewer.trackedEntity = undefined;

@@ -31,7 +31,7 @@ class ExecutionSummary:
 
 class SimulationState:
     def __init__(self, root_path: Path):
-        self.current_time = datetime(2026, 3, 12, 8, 0, 0, tzinfo=timezone.utc)
+        self.current_time = datetime.now(timezone.utc)
         self.time_warp_multiplier = 1
         self.satellites: dict[str, Satellite] = {}
         self.debris: dict[str, SpaceObject] = {}
@@ -103,6 +103,7 @@ class SimulationState:
         satellite_count: int = 50,
         debris_count: int = 20,
     ) -> None:
+        self.current_time = datetime.now(timezone.utc)
         self.satellites.clear()
         self.debris.clear()
         self.maneuvers.clear()
@@ -246,6 +247,21 @@ class SimulationState:
                 continue
 
             burn_time = self.current_time + timedelta(seconds=max(30, cdm.tca_seconds * 0.3))
+            earliest = self.current_time + timedelta(seconds=MIN_COMMAND_LATENCY_SECONDS)
+            if burn_time < earliest:
+                burn_time = earliest
+
+            # Blind conjunction rule (PDF):
+            # If the planned burn falls into a blackout, shift it to the last moment
+            # within [earliest, burn_time] where LOS to at least one ground station exists.
+            last_los = self._find_last_los_time_before(
+                sat_state_at_now=sat.state,
+                start_time=earliest,
+                end_time=burn_time,
+            )
+            if last_los is None:
+                continue
+            burn_time = last_los
             key = f"{cdm.satellite_id}:{burn_time.isoformat()}"
             if key in existing_burns:
                 continue
@@ -287,6 +303,14 @@ class SimulationState:
             existing_burns.add(key)
 
             recovery_time = burn_time + timedelta(seconds=THERMAL_COOLDOWN_SECONDS + 60)
+            recovery_time_next = self._find_next_los_time_after(
+                sat_state_at_now=sat.state,
+                start_time=recovery_time,
+                max_lookahead_seconds=7200,
+            )
+            if recovery_time_next is None:
+                continue
+            recovery_time = recovery_time_next
             candidate_recovery = ManeuverCommand(
                 burn_id=f"AUTO-REC-{cdm.debris_id}",
                 satellite_id=cdm.satellite_id,
@@ -562,7 +586,22 @@ class SimulationState:
     def schedule_maneuvers(self, sat_id: str, commands: list[ManeuverCommand]) -> tuple[bool, bool, float]:
         sat = self.satellites[sat_id]
 
-        los_ok = all(self.ground_stations.has_line_of_sight(sat.state[:3], cmd.burn_time) for cmd in commands)
+        # Blackout rule (PDF): a maneuver can only be transmitted when the target
+        # has geometric line-of-sight to at least one ground station, respecting
+        # Earth curvature + the station's minimum elevation mask.
+        #
+        # Important: we must evaluate LOS using the satellite state *at cmd.burn_time*,
+        # not the current state's position.
+        los_ok = True
+        for cmd in commands:
+            seconds = (cmd.burn_time - self.current_time).total_seconds()
+            if seconds < 0:
+                los_ok = False
+                break
+            sat_state_at_burn = self._propagate_state_copy(sat.state, seconds)
+            if not self.ground_stations.has_line_of_sight(sat_state_at_burn[:3], cmd.burn_time):
+                los_ok = False
+                break
         burn_times = [cmd.burn_time for cmd in commands]
         latency_ok = all((bt - self.current_time).total_seconds() >= MIN_COMMAND_LATENCY_SECONDS for bt in burn_times)
         cooldown_ok = self.validate_cooldown(sat, burn_times)
@@ -578,6 +617,82 @@ class SimulationState:
             for cmd in commands:
                 cmd.rejected = True
         return los_ok and latency_ok, fuel_ok, projected_mass
+
+    def _propagate_state_copy(self, state: np.ndarray, seconds: float, dt_seconds: float = 10.0) -> np.ndarray:
+        """Propagate a single state vector without mutating simulation objects."""
+        if seconds <= 0:
+            return state.copy()
+
+        state_vec = state.copy()
+        whole_steps = int(seconds // dt_seconds)
+        remainder = seconds - whole_steps * dt_seconds
+
+        for _ in range(whole_steps):
+            state_vec = rk4_step(state_vec, dt_seconds)
+        if remainder > 1e-6:
+            state_vec = rk4_step(state_vec, remainder)
+        return state_vec
+
+    def _find_last_los_time_before(self, sat_state_at_now: np.ndarray, start_time: datetime, end_time: datetime) -> datetime | None:
+        """Return the latest time in [start_time, end_time] where LOS is available."""
+        if end_time <= start_time:
+            return None
+        if end_time <= self.current_time:
+            return None
+
+        cur_time = self.current_time
+        probe = sat_state_at_now.copy()
+        last_good: datetime | None = None
+
+        step = timedelta(seconds=float(BLACKOUT_SAMPLE_SECONDS))
+        # Iterate forward in discrete sampling steps.
+        while cur_time <= end_time:
+            if cur_time >= start_time and self.ground_stations.has_line_of_sight(probe[:3], cur_time):
+                last_good = cur_time
+            next_time = cur_time + step
+            if next_time > end_time:
+                # Final partial step to align with end_time.
+                dt = (end_time - cur_time).total_seconds()
+                if dt > 1e-6:
+                    probe = rk4_step(probe, dt)
+                break
+            probe = rk4_step(probe, BLACKOUT_SAMPLE_SECONDS)
+            cur_time = next_time
+
+        return last_good
+
+    def _find_next_los_time_after(
+        self,
+        sat_state_at_now: np.ndarray,
+        start_time: datetime,
+        max_lookahead_seconds: int = 7200,
+    ) -> datetime | None:
+        """Return the earliest time >= start_time where LOS is available."""
+        if start_time <= self.current_time:
+            probe_state = sat_state_at_now.copy()
+            cur = self.current_time
+        else:
+            seconds_from_now = float((start_time - self.current_time).total_seconds())
+            probe_state = self._propagate_state_copy(sat_state_at_now, seconds_from_now)
+            cur = start_time
+
+        # Use coarse sampling for speed.
+        step = float(BLACKOUT_SAMPLE_SECONDS)
+        horizon = float(max_lookahead_seconds)
+
+        elapsed = 0.0
+        while elapsed <= horizon:
+            if self.ground_stations.has_line_of_sight(probe_state[:3], cur):
+                return cur
+
+            dt = min(step, horizon - elapsed)
+            if dt <= 1e-6:
+                break
+            probe_state = rk4_step(probe_state, dt)
+            cur = cur + timedelta(seconds=dt)
+            elapsed += dt
+
+        return None
 
     def _propagate_all(self, seconds: float, dt_seconds: float = 10.0) -> None:
         if seconds <= 0:
