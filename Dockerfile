@@ -16,9 +16,11 @@ COPY . /app
 
 RUN python3 -m pip install --no-cache-dir \
     fastapi \
-    uvicorn \
+    "uvicorn[standard]" \
     numpy \
-    pydantic
+    pydantic \
+    sgp4 \
+    astropy
 
 EXPOSE 8000
 

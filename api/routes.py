@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 import numpy as np
 from fastapi import APIRouter, HTTPException
@@ -9,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from engine.models import ManeuverCommand
 from engine.sim_state import SimulationState
+from engine.tle_utils import tle_to_gcrs_state_km_kms
 
 
 class VecModel(BaseModel):
@@ -27,6 +30,18 @@ class TelemetryObject(BaseModel):
 class TelemetryRequest(BaseModel):
     timestamp: datetime
     objects: list[TelemetryObject]
+
+
+class TleObject(BaseModel):
+    id: str
+    object_type: Literal["SATELLITE", "DEBRIS"] = "SATELLITE"
+    tle_line1: str
+    tle_line2: str
+    timestamp: datetime
+
+
+class TleTelemetryRequest(BaseModel):
+    objects: list[TleObject]
 
 
 class ManeuverItem(BaseModel):
@@ -53,6 +68,43 @@ class TimeWarpRequest(BaseModel):
     multiplier: int
 
 
+class CdmCsvLoadRequest(BaseModel):
+    csv_path: str = "test_data/debris_data.csv"
+    max_rows: int = Field(default=1000, ge=1, le=20000)
+    replace_existing: bool = False
+    id_prefix: str = "CDM-DEB"
+
+
+def _rtn_basis_from_state(state_vec: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    r = state_vec[:3]
+    v = state_vec[3:6]
+    r_norm = float(np.linalg.norm(r))
+    if r_norm < 1e-10:
+        return None
+    r_hat = r / r_norm
+    h = np.cross(r, v)
+    h_norm = float(np.linalg.norm(h))
+    if h_norm < 1e-10:
+        return None
+    n_hat = h / h_norm
+    t_hat = np.cross(n_hat, r_hat)
+    t_norm = float(np.linalg.norm(t_hat))
+    if t_norm < 1e-10:
+        return None
+    t_hat = t_hat / t_norm
+    return r_hat, t_hat, n_hat
+
+
+def _safe_float(row: dict[str, str], key: str) -> float | None:
+    raw = row.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def build_router(state: SimulationState) -> APIRouter:
     router = APIRouter(prefix="/api")
 
@@ -72,6 +124,40 @@ def build_router(state: SimulationState) -> APIRouter:
             "status": "ACK",
             "processed_count": processed,
             "active_cdm_warnings": len(state.conjunctions),
+        }
+
+    @router.post("/telemetry/tle")
+    async def telemetry_tle(payload: TleTelemetryRequest) -> dict[str, Any]:
+        """
+        Ingest TLEs, propagate with SGP4, convert TEME->GCRS (ECI-like),
+        and ingest as state vectors (km, km/s).
+        """
+        processed = 0
+
+        # Keep simulation time aligned with the last ingested object timestamp.
+        last_ts: datetime | None = None
+        for obj in payload.objects:
+            # Ensure ISO parsing uses timezone information.
+            epoch_iso = obj.timestamp.isoformat()
+            state_vec = tle_to_gcrs_state_km_kms(obj.tle_line1, obj.tle_line2, epoch_iso)
+            state_vec = np.asarray(state_vec, dtype=float)
+
+            state.ingest_object(
+                obj.id,
+                obj.object_type,
+                state_vec,
+            )
+            processed += 1
+            last_ts = obj.timestamp
+
+        if last_ts is not None:
+            state.current_time = last_ts
+
+        return {
+            "status": "ACK",
+            "processed_count": processed,
+            "active_cdm_warnings": len(state.conjunctions),
+            "last_timestamp": last_ts.isoformat() if last_ts else None,
         }
 
     @router.post("/maneuver/schedule", status_code=202)
@@ -129,6 +215,76 @@ def build_router(state: SimulationState) -> APIRouter:
             "satellites": len(state.satellites),
             "debris": len(state.debris),
             "active_cdm_warnings": len(state.conjunctions),
+        }
+
+    @router.post("/debug/load_cdm_csv")
+    async def debug_load_cdm_csv(payload: CdmCsvLoadRequest) -> dict[str, Any]:
+        csv_file = Path(payload.csv_path)
+        if not csv_file.is_absolute():
+            csv_file = Path.cwd() / csv_file
+        if not csv_file.exists():
+            raise HTTPException(status_code=404, detail=f"CSV not found: {csv_file}")
+
+        sat_list = list(state.satellites.values())
+        if not sat_list:
+            raise HTTPException(status_code=422, detail="No satellites available to anchor RTN conversion")
+
+        if payload.replace_existing:
+            state.debris.clear()
+
+        loaded = 0
+        skipped = 0
+
+        with csv_file.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row_idx, row in enumerate(reader, start=1):
+                if loaded >= payload.max_rows:
+                    break
+
+                rr = _safe_float(row, "relative_position_r")
+                rt = _safe_float(row, "relative_position_t")
+                rn = _safe_float(row, "relative_position_n")
+                vr = _safe_float(row, "relative_velocity_r")
+                vt = _safe_float(row, "relative_velocity_t")
+                vn = _safe_float(row, "relative_velocity_n")
+                if None in {rr, rt, rn, vr, vt, vn}:
+                    skipped += 1
+                    continue
+
+                mission = _safe_float(row, "mission_id")
+                if mission is None:
+                    mission_idx = row_idx
+                else:
+                    mission_idx = int(abs(mission))
+                anchor = sat_list[mission_idx % len(sat_list)]
+                basis = _rtn_basis_from_state(anchor.state)
+                if basis is None:
+                    skipped += 1
+                    continue
+                r_hat, t_hat, n_hat = basis
+                rot = np.column_stack((r_hat, t_hat, n_hat))
+
+                # Dataset values are in meters and meters/second.
+                rel_pos_km = np.array([rr, rt, rn], dtype=float) / 1000.0
+                rel_vel_kmps = np.array([vr, vt, vn], dtype=float) / 1000.0
+
+                obj_state = anchor.state.copy()
+                obj_state[:3] = anchor.state[:3] + rot @ rel_pos_km
+                obj_state[3:6] = anchor.state[3:6] + rot @ rel_vel_kmps
+
+                event_id = row.get("event_id", "0")
+                obj_id = f"{payload.id_prefix}-{event_id}-{row_idx:06d}"
+                state.ingest_object(obj_id, "DEBRIS", obj_state)
+                loaded += 1
+
+        return {
+            "status": "LOADED",
+            "source_csv": str(csv_file),
+            "loaded": loaded,
+            "skipped": skipped,
+            "debris_total": len(state.debris),
+            "active_cdm_warnings": len(state.conjunctions),
+            "note": "CDM relative RTN fields were converted to ECI-like states using mission-anchored satellites.",
         }
 
     @router.get("/sim/timewarp")
