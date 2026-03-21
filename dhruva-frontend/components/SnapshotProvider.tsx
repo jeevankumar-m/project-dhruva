@@ -151,7 +151,7 @@ export function SnapshotProvider({ children }: { children: React.ReactNode }) {
         ingestSnapshot(data);
         setStatus("degraded");
       } catch {
-        if (mounted && statusRef.current !== "live") setStatus("disconnected");
+        if (mounted && (statusRef.current as string) !== "live") setStatus("disconnected");
       }
     }, 400);
 

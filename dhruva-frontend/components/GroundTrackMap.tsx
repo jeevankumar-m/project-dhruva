@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ConjunctionItem, DebrisTuple, GroundStationSnapshot, SatelliteSnapshot } from "@/lib/types";
+import { ConjunctionItem, DebrisTuple, GroundStationSnapshot, SatelliteSnapshot, TrackPoint } from "@/lib/types";
 
 interface GroundTrackMapProps {
   satellites: SatelliteSnapshot[];
@@ -12,18 +12,12 @@ interface GroundTrackMapProps {
   groundStations: GroundStationSnapshot[];
   debrisCloud: DebrisTuple[];
   conjunctions: ConjunctionItem[];
+  tracks?: Record<string, TrackPoint[]>;
 }
 
 const MU = 398600.4418;
 const OMEGA_EARTH = 7.2921150e-5;
 
-function cross(a: number[], b: number[]): number[] {
-  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-}
-
-function vecMag(v: number[]): number {
-  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-}
 
 function julianDate(date: Date): number {
   let year = date.getUTCFullYear();
@@ -42,74 +36,54 @@ function gmstRad(ts: string): number {
   return ((deg % 360 + 360) % 360) * Math.PI / 180;
 }
 
-function computeGroundTrack(
+function propagateStep(r: number[], v: number[], dt: number): [number[], number[]] {
+  const accel = (rr: number[]) => {
+    const mag3 = Math.pow(rr[0] * rr[0] + rr[1] * rr[1] + rr[2] * rr[2], 1.5);
+    const f = -MU / mag3;
+    return [f * rr[0], f * rr[1], f * rr[2]];
+  };
+  const k1a = accel(r);
+  const r2 = r.map((x, i) => x + v[i] * dt / 2);
+  const v2 = v.map((x, i) => x + k1a[i] * dt / 2);
+  const k2a = accel(r2);
+  const r3 = r.map((x, i) => x + v2[i] * dt / 2);
+  const v3 = v.map((x, i) => x + k2a[i] * dt / 2);
+  const k3a = accel(r3);
+  const r4 = r.map((x, i) => x + v3[i] * dt);
+  const v4 = v.map((x, i) => x + k3a[i] * dt);
+  const k4a = accel(r4);
+  const newR = r.map((x, i) => x + (dt / 6) * (v[i] + 2 * v2[i] + 2 * v3[i] + v4[i]));
+  const newV = v.map((x, i) => x + (dt / 6) * (k1a[i] + 2 * k2a[i] + 2 * k3a[i] + k4a[i]));
+  return [newR, newV];
+}
+
+function computeForwardTrack(
   eci: { x: number; y: number; z: number; vx: number; vy: number; vz: number },
   timestamp: string,
-  numPoints: number = 400,
+  durationMinutes: number = 90,
+  stepSeconds: number = 120,
 ): Array<{ lat: number; lon: number }> {
-  const r = [eci.x, eci.y, eci.z];
-  const v = [eci.vx, eci.vy, eci.vz];
-  const rMag = vecMag(r);
-  const vSq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-
-  const energy = vSq / 2 - MU / rMag;
-  if (energy >= 0) return [];
-  const a = -MU / (2 * energy);
-
-  const h = cross(r, v);
-  const hMag = vecMag(h);
-  if (hMag < 1e-10) return [];
-
-  const rdotv = r[0] * v[0] + r[1] * v[1] + r[2] * v[2];
-  const eVec = [
-    (vSq / MU - 1 / rMag) * r[0] - (rdotv / MU) * v[0],
-    (vSq / MU - 1 / rMag) * r[1] - (rdotv / MU) * v[1],
-    (vSq / MU - 1 / rMag) * r[2] - (rdotv / MU) * v[2],
-  ];
-  const e = vecMag(eVec);
-
-  let P: number[];
-  if (e > 1e-8) {
-    P = eVec.map((x) => x / e);
-  } else {
-    P = r.map((x) => x / rMag);
-  }
-  const hHat = h.map((x) => x / hMag);
-  const Q = cross(hHat, P);
-
-  const orbitalPeriod = 2 * Math.PI * Math.sqrt(a * a * a / MU);
+  let r = [eci.x, eci.y, eci.z];
+  let v = [eci.vx, eci.vy, eci.vz];
   const gmst0 = gmstRad(timestamp);
-  const p = a * (1 - e * e);
-  const points: Array<{ lat: number; lon: number }> = [];
-
-  for (let i = 0; i <= numPoints; i++) {
-    const theta = (2 * Math.PI * i) / numPoints;
-    const radius = p / (1 + e * Math.cos(theta));
-    const xPeri = radius * Math.cos(theta);
-    const yPeri = radius * Math.sin(theta);
-
-    const xECI = xPeri * P[0] + yPeri * Q[0];
-    const yECI = xPeri * P[1] + yPeri * Q[1];
-    const zECI = xPeri * P[2] + yPeri * Q[2];
-
-    const fracOrbit = i / numPoints;
-    const dt = fracOrbit * orbitalPeriod;
-    const gmst = gmst0 + OMEGA_EARTH * dt;
+  const pts: Array<{ lat: number; lon: number }> = [];
+  const totalSteps = Math.floor((durationMinutes * 60) / stepSeconds);
+  for (let i = 0; i <= totalSteps; i++) {
+    const t = i * stepSeconds;
+    const gmst = gmst0 + OMEGA_EARTH * t;
     const cosG = Math.cos(gmst);
     const sinG = Math.sin(gmst);
-
-    const xECEF = xECI * cosG + yECI * sinG;
-    const yECEF = -xECI * sinG + yECI * cosG;
-    const zECEF = zECI;
-
-    const rr = Math.sqrt(xECEF * xECEF + yECEF * yECEF + zECEF * zECEF);
-    const lat = Math.asin(Math.max(-1, Math.min(1, zECEF / rr))) * 180 / Math.PI;
-    const lon = Math.atan2(yECEF, xECEF) * 180 / Math.PI;
-
-    points.push({ lat, lon });
+    const xe = r[0] * cosG + r[1] * sinG;
+    const ye = -r[0] * sinG + r[1] * cosG;
+    const ze = r[2];
+    const rr = Math.sqrt(xe * xe + ye * ye + ze * ze);
+    pts.push({
+      lat: Math.asin(Math.max(-1, Math.min(1, ze / rr))) * 180 / Math.PI,
+      lon: Math.atan2(ye, xe) * 180 / Math.PI,
+    });
+    if (i < totalSteps) [r, v] = propagateStep(r, v, stepSeconds);
   }
-
-  return points;
+  return pts;
 }
 
 function mercatorXY(lat: number, lon: number, width: number, height: number) {
@@ -145,6 +119,7 @@ export default function GroundTrackMap({
   groundStations,
   debrisCloud,
   conjunctions,
+  tracks,
 }: GroundTrackMapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const mapImageRef = useRef<HTMLImageElement | null>(null);
@@ -237,17 +212,47 @@ export default function GroundTrackMap({
       ctx.stroke();
     }
 
-    const dt = new Date(timestamp);
-    const utcHours = dt.getUTCHours() + dt.getUTCMinutes() / 60;
-    const sunLon = (utcHours / 24) * 360 - 180;
-    const nightCenter = (((sunLon + 180 + 180) % 360) + 360) % 360 - 180;
-    const nx = ((nightCenter + 180) / 360) * width;
-    const grd = ctx.createLinearGradient(nx - width / 2, 0, nx + width / 2, 0);
-    grd.addColorStop(0, "rgba(15,23,42,0.15)");
-    grd.addColorStop(0.5, "rgba(15,23,42,0.45)");
-    grd.addColorStop(1, "rgba(15,23,42,0.15)");
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, width, height);
+    // Compute accurate sub-solar point accounting for solar declination
+    {
+      const jd = julianDate(new Date(timestamp));
+      const T = (jd - 2451545.0) / 36525.0;
+      const M_rad = (((357.52911 + 35999.05029 * T) % 360 + 360) % 360) * Math.PI / 180;
+      const L0 = ((280.46646 + 36000.76983 * T) % 360 + 360) % 360;
+      const C = 1.9146 * Math.sin(M_rad) + 0.020 * Math.sin(2 * M_rad);
+      const sunEclLon = ((L0 + C) % 360 + 360) % 360 * Math.PI / 180;
+      const obliq = (23.4393 - 0.013 * T) * Math.PI / 180;
+      const sunDecl = Math.asin(Math.sin(obliq) * Math.sin(sunEclLon));
+      const sunRA = Math.atan2(Math.cos(obliq) * Math.sin(sunEclLon), Math.cos(sunEclLon));
+      let sunLonRad = sunRA - gmstRad(timestamp);
+      sunLonRad = ((sunLonRad % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+      if (sunLonRad > Math.PI) sunLonRad -= 2 * Math.PI;
+      const sunLonDeg = sunLonRad * 180 / Math.PI;
+
+      // Draw terminator: fill night region using lat-varying terminator
+      ctx.globalAlpha = 0.38;
+      ctx.fillStyle = "#0a1628";
+      for (let side = -1; side <= 1; side += 2) {
+        const pts: Array<[number, number]> = [];
+        for (let latDeg = 89 * side; Math.abs(latDeg) >= 1; latDeg -= side) {
+          const latRad = latDeg * Math.PI / 180;
+          const cosH = -Math.tan(latRad) * Math.tan(sunDecl);
+          let lonT = cosH <= -1 ? sunLonDeg + side * 180 : cosH >= 1 ? sunLonDeg : sunLonDeg + side * Math.acos(cosH) * 180 / Math.PI;
+          lonT = ((lonT + 180) % 360 + 360) % 360 - 180;
+          const p = mercatorXY(latDeg, lonT, width, height);
+          pts.push([p.x, p.y]);
+        }
+        if (pts.length < 2) continue;
+        const edgeX = side > 0 ? width : 0;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.lineTo(edgeX, pts[pts.length - 1][1]);
+        ctx.lineTo(edgeX, pts[0][1]);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1.0;
+    }
 
     for (const gs of groundStations) {
       const p = mercatorXY(gs.lat, gs.lon, width, height);
@@ -290,24 +295,41 @@ export default function GroundTrackMap({
 
     if (selectedSatelliteId) {
       const selSat = satellites.find((s) => s.id === selectedSatelliteId);
+
+      // Historical 90-min trail (solid)
+      const trail = tracks?.[selectedSatelliteId];
+      if (trail && trail.length > 1) {
+        ctx.strokeStyle = "rgba(34,211,238,0.55)";
+        ctx.lineWidth = 1.5 / z;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        let penDown = false;
+        for (let i = 0; i < trail.length; i++) {
+          const pt = mercatorXY(trail[i].lat, trail[i].lon, width, height);
+          const wrapBreak = i > 0 && Math.abs(trail[i].lon - trail[i - 1].lon) > 180;
+          if (!penDown || wrapBreak) { ctx.moveTo(pt.x, pt.y); penDown = true; }
+          else ctx.lineTo(pt.x, pt.y);
+        }
+        ctx.stroke();
+      }
+
+      // Predicted 90-min trajectory (dashed)
       if (selSat?.eci) {
-        const orbitPts = computeGroundTrack(selSat.eci, timestamp, 400);
-        if (orbitPts.length > 1) {
+        const predictedPts = computeForwardTrack(selSat.eci, timestamp, 90, 120);
+        if (predictedPts.length > 1) {
           ctx.strokeStyle = "#22d3ee";
           ctx.lineWidth = 1.5 / z;
+          ctx.setLineDash([6 / z, 5 / z]);
           ctx.beginPath();
           let penDown = false;
-          for (let i = 0; i < orbitPts.length; i++) {
-            const pt = mercatorXY(orbitPts[i].lat, orbitPts[i].lon, width, height);
-            const wrapBreak = i > 0 && Math.abs(orbitPts[i].lon - orbitPts[i - 1].lon) > 180;
-            if (!penDown || wrapBreak) {
-              ctx.moveTo(pt.x, pt.y);
-              penDown = true;
-            } else {
-              ctx.lineTo(pt.x, pt.y);
-            }
+          for (let i = 0; i < predictedPts.length; i++) {
+            const pt = mercatorXY(predictedPts[i].lat, predictedPts[i].lon, width, height);
+            const wrapBreak = i > 0 && Math.abs(predictedPts[i].lon - predictedPts[i - 1].lon) > 180;
+            if (!penDown || wrapBreak) { ctx.moveTo(pt.x, pt.y); penDown = true; }
+            else ctx.lineTo(pt.x, pt.y);
           }
           ctx.stroke();
+          ctx.setLineDash([]);
         }
       }
     }
@@ -334,7 +356,7 @@ export default function GroundTrackMap({
     }
 
     ctx.restore();
-  }, [satellites, selectedSatelliteId, timestamp, groundStations, debrisCloud, conjunctions]);
+  }, [satellites, selectedSatelliteId, timestamp, groundStations, debrisCloud, conjunctions, tracks]);
 
   const drawFrameRef = useRef(drawFrame);
   useEffect(() => {
@@ -418,7 +440,11 @@ export default function GroundTrackMap({
 
   return (
     <div className="relative h-full border border-slate-800 bg-slate-950 overflow-hidden">
-      <div className="absolute top-3 left-3 z-10 text-xs text-slate-300">Track Live - Ground Track (Mercator)</div>
+      <div className="absolute top-3 left-3 z-10 flex items-center gap-3">
+        <span className="text-xs font-semibold text-slate-200 tracking-wide">GROUND TRACK — MERCATOR</span>
+        <span className="flex items-center gap-1 text-[10px] text-cyan-400/70"><span className="w-4 h-px bg-cyan-400/60 inline-block" />90m trail</span>
+        <span className="flex items-center gap-1 text-[10px] text-cyan-300"><span className="w-4 h-px border-t border-dashed border-cyan-300 inline-block" />90m predicted</span>
+      </div>
 
       <div className="absolute top-3 right-3 z-10 flex items-center gap-1">
         <button
@@ -453,8 +479,10 @@ export default function GroundTrackMap({
       <div className="absolute bottom-3 left-3 z-10 text-[10px] text-slate-400">
         Scroll to zoom | Right-click + drag to pan
       </div>
-      <div className="absolute bottom-3 right-3 text-xs text-slate-300 bg-slate-900/80 rounded-full px-3 py-1 border border-slate-700">
-        2D - 90m trail
+      <div className="absolute bottom-3 right-3 flex items-center gap-2 text-[10px] text-slate-400 bg-slate-900/80 px-2 py-1 border border-slate-700/60">
+        <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> GS
+        <span className="w-2 h-2 rounded-full bg-blue-400 inline-block ml-1" /> SAT
+        <span className="w-2 h-2 rounded-full bg-red-500 inline-block ml-1" /> DEBRIS
       </div>
     </div>
   );

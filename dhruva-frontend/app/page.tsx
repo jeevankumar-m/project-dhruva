@@ -20,6 +20,7 @@ function Dashboard() {
     selectedSatelliteId,
     setSelectedSatelliteId,
     metricsHistory,
+    tracks,
   } = useSnapshotContext();
 
   const satellites = useMemo(() => snapshot?.satellites ?? [], [snapshot?.satellites]);
@@ -42,19 +43,22 @@ function Dashboard() {
           </div>
 
           <div className="flex-1 flex flex-col gap-1 min-w-0 min-h-[26rem] xl:min-h-0">
-            <div className="flex items-center justify-end shrink-0">
-              <div className="inline-flex border border-slate-700 bg-slate-900 p-0.5 text-xs">
+            <div className="flex items-center justify-between shrink-0 px-0.5">
+              <div className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">
+                {snapshot?.counts ? `${snapshot.counts.satellites} SATs · ${snapshot.counts.debris} DEB · ${snapshot.counts.conjunction_warnings} CDMs` : "Orbital View"}
+              </div>
+              <div className="inline-flex border border-slate-700 bg-slate-900/80 p-0.5 text-[11px]">
                 <button
-                  className={`px-3 py-0.5 ${viewMode === "2d" ? "bg-cyan-500 text-slate-950" : "text-slate-300"}`}
+                  className={`px-3 py-0.5 font-semibold tracking-wide transition-colors ${viewMode === "2d" ? "bg-cyan-500 text-slate-950" : "text-slate-400 hover:text-slate-200"}`}
                   onClick={() => setViewMode("2d")}
                 >
-                  2D
+                  2D MAP
                 </button>
                 <button
-                  className={`px-3 py-0.5 ${viewMode === "3d" ? "bg-cyan-500 text-slate-950" : "text-slate-300"}`}
+                  className={`px-3 py-0.5 font-semibold tracking-wide transition-colors ${viewMode === "3d" ? "bg-cyan-500 text-slate-950" : "text-slate-400 hover:text-slate-200"}`}
                   onClick={() => setViewMode("3d")}
                 >
-                  3D
+                  3D ORBIT
                 </button>
               </div>
             </div>
@@ -68,6 +72,7 @@ function Dashboard() {
                   groundStations={snapshot?.ground_stations ?? []}
                   debrisCloud={snapshot?.debris_cloud ?? []}
                   conjunctions={snapshot?.conjunctions ?? []}
+                  tracks={tracks}
                 />
               ) : (
                 <OrbitTracker3D
