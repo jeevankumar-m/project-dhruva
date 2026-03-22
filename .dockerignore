@@ -1,0 +1,6 @@
+dhruva-frontend/node_modules
+__pycache__
+*.pyc
+*.pyo
+.git
+.gitignore
