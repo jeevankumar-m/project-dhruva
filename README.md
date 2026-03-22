@@ -86,7 +86,7 @@ Project-dhruva/
 ├── test_data/
 │   └── debris_data.csv          # CDM-style stress test data
 ├── dhruva-frontend/             # Next.js frontend
-├── Dockerfile                   # Backend Docker image
+├── Dockerfile                   # Docker image (backend + frontend)
 └── README.md
 ```
 
@@ -102,20 +102,10 @@ Project-dhruva/
 
 ## Quick Start
 
-Run backend in Docker and frontend locally:
+Run both backend and frontend with a single command:
 
 ```bash
-# From repository root
-docker build -t dhruva-cdm .
-docker run --rm -p 8000:8000 dhruva-cdm
-```
-
-In a second terminal:
-
-```bash
-cd dhruva-frontend
-npm install
-npm run dev
+docker build -t dhruva-cdm . && docker run --rm -p 8000:8000 -p 3000:3000 dhruva-cdm
 ```
 
 Open:
@@ -130,14 +120,14 @@ Open:
 ### Option A: Docker (recommended)
 
 ```bash
-docker build -t dhruva-cdm .
-docker run --rm -p 8000:8000 dhruva-cdm
+docker build -t dhruva-cdm . && docker run --rm -p 8000:8000 -p 3000:3000 dhruva-cdm
 ```
 
 Notes:
 
+- The Dockerfile builds and runs both the FastAPI backend (port 8000) and Next.js frontend (port 3000) in a single container.
 - The Dockerfile installs `uvicorn[standard]` to include WebSocket support libraries.
-- If port `8000` is busy, stop the process using it or map a different host port.
+- If port `8000` or `3000` is busy, stop the processes using them before running.
 
 Health check:
 
