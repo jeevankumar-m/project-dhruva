@@ -8,6 +8,7 @@ Autonomous Constellation management and conjunction decision support platform wi
 
 - [Overview](#overview)
 - [Key Features](#key-features)
+- [Screenshots](#screenshots)
 - [System Architecture](#system-architecture)
 - [Repository Structure](#repository-structure)
 - [Prerequisites](#prerequisites)
@@ -46,6 +47,99 @@ The platform has two primary execution modes:
 - Autonomous graveyard routing based on low-fuel threshold.
 - Mission metrics: fuel usage, uptime, outage accumulation, and avoidance efficiency.
 - Frontend dashboard with 2D Mercator ground track (90-min historical trail + dashed 90-min predicted trajectory, accurate terminator line), 3D Cesium orbit view, conjunction bullseye plot, maneuver Gantt timeline, and dedicated fleet fuel page.
+
+---
+
+## Screenshots
+
+### 1. Ground Track — 2D Map Dashboard
+![Ground Track Dashboard](screenshots/1.png)
+
+Main dashboard displaying the real-time ground track of the constellation on a 2D Mercator map. Shows satellite positions, ground station overlays (e.g., Goldstone Tracking, IIT Delhi Ground Node, ISTRAC Bengaluru), telemetry summary (link quality, velocity), constellation contents, and active blackout status for each satellite.
+
+---
+
+### 2. Dashboard with Maneuver Timeline
+![Dashboard with Maneuver Timeline](screenshots/2.png)
+
+Extended dashboard view showing the ground track alongside the **Maneuver Timeline** panel at the bottom, which visualizes scheduled and executed burns across the simulation stream for each satellite in the fleet.
+
+---
+
+### 3. 3D Orbit Tracker — Polar View (Cesium)
+![3D Orbit Tracker Polar View](screenshots/3.png)
+
+Worldwide 3D perspective of the constellation using the Cesium globe renderer, viewed from a polar angle. Satellites and their orbital trails are rendered on the Earth's surface, with constellation health and blackout status displayed on the right panel.
+
+---
+
+### 4. 3D Orbit Tracker — Close Orbit View (Cesium)
+![3D Orbit Tracker Close View](screenshots/4.png)
+
+Close-up 3D orbit view showing a satellite's orbital ground track arcing over a landmass. Highlights individual satellite telemetry (SAT-Alpha-07) including fuel mass, dry mass, altitude, and longitude on the right panel. Blackout events for multiple satellites are also listed.
+
+---
+
+### 5. 3D Orbit Tracker — Full Constellation Globe View (Cesium)
+![3D Full Constellation Globe View](screenshots/5.png)
+
+Full worldwide 3D globe view of the entire constellation with all satellite positions and orbital tracks rendered simultaneously, giving an at-a-glance overview of fleet coverage and spacing.
+
+---
+
+### 6. Conjunction Bullseye — Extended View
+![Conjunction Bullseye Extended View](screenshots/6.png)
+
+Enlarged conjunction bullseye radar plot for a selected satellite (SAT-Alpha-07). Displays the predicted closest approach point relative to the satellite's reference frame, with colour-coded risk zones (Dhruva 1 km, Warning 2 km, Outer 5 km) and a conjunction list with miss distances.
+
+---
+
+### 7. Fleet Fuel & ΔV Analysis
+![Fleet Fuel and DeltaV Analysis](screenshots/7.png)
+
+Fleet-wide fuel and delta-V analytics page. Shows per-satellite propellant budget bars, total ΔV consumed (124.11 m/s), collision avoidance score, and a rolling history chart comparing ΔV consumed against collisions avoided over the simulation window.
+
+---
+
+### 8. Reports — Burn Logs
+![Burn Logs Report](screenshots/8.png)
+
+Reports section listing the full burn log for the current simulation stream. Each entry shows the burn ID, satellite, time (UTC), delta-V in m/s, and execution status (Executed / Rejected), providing a complete audit trail of all maneuver decisions.
+
+---
+
+### 9. Graveyard Orbit Monitor
+![Graveyard Orbit Monitor](screenshots/9.png)
+
+Graveyard orbit monitor that automatically tracks satellites moved to graveyard mode when their fuel falls below the critical threshold. Displays satellite ID and the trigger condition, ensuring decommissioned assets are flagged and tracked.
+
+---
+
+### 10. CDM Alerts
+![CDM Alerts](screenshots/10.png)
+
+Conjunction Data Message (CDM) alerts dashboard showing current active conjunction warnings for the fleet. Entries are sorted by miss distance and time to closest approach, with columns for satellite, debris object, miss distance, time range, and alert level.
+
+---
+
+### 11. Genesis Engine — Collision Prediction (Pre-Maneuver)
+![Genesis Collision Prediction Pre-Maneuver](screenshots/genesis1.png)
+
+Orbital plot from the Genesis autonomous maneuver planning engine showing the predicted point of collision between a satellite (green marker) and debris (red marker) before any avoidance burn is executed. The predicted collision point is highlighted on the orbit circle.
+
+---
+
+### 12. Genesis Engine — Collision Prediction (Alternate Geometry)
+![Genesis Collision Prediction Alternate](screenshots/genesis2.png)
+
+Another Genesis orbital plot showing a close-approach scenario where the satellite and debris tracks converge. The predicted collision point shifts depending on the relative geometry of the two objects' orbits.
+
+---
+
+### 13. Genesis Engine — Post-Maneuver Avoidance Visualization
+![Genesis Post-Maneuver Avoidance](screenshots/genesis3.png)
+
+Post-maneuver Genesis plot showing the **next predicted point of collision** after a burn has been executed. The previous burn point (magenta) is marked on the orbit, and the satellite's new orbital path (green) diverges from the debris track (red), confirming a successful avoidance trajectory.
 
 ---
 
