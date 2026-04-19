@@ -103,14 +103,22 @@ def parse_tles(text: str) -> list[tuple[str, str, str]]:
     return tles
 
 
-def tle_epoch_to_iso(line1: str) -> str:
-    """Extract the TLE epoch from line 1 and return it as an ISO UTC string."""
+def tle_epoch_to_datetime(line1: str) -> datetime:
+    """Extract the TLE epoch from line 1 and return it as a UTC datetime."""
     epoch_str = line1[18:32].strip()
     yy = int(epoch_str[0:2])
     year = 2000 + yy if yy < 57 else 1900 + yy
     day_frac = float(epoch_str[2:])
-    dt = datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_frac - 1)
-    return dt.isoformat()
+    return datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_frac - 1)
+
+
+def is_fresh(line1: str, max_age_days: int = 30) -> bool:
+    """Return True if the TLE epoch is within max_age_days of today."""
+    try:
+        epoch = tle_epoch_to_datetime(line1)
+        return (datetime.now(timezone.utc) - epoch).days <= max_age_days
+    except Exception:
+        return False
 
 
 def post_batch(objects: list[dict]) -> bool:
@@ -143,6 +151,19 @@ def ingest_feed(session: requests.Session, key: str, limit: int) -> int:
 
     print(f"  Got {len(tles)} TLE sets")
 
+    # Only keep TLEs with recent epochs — old ones have re-entered and their
+    # positions won't align with the current simulation time.
+    fresh = [(n, l1, l2) for n, l1, l2 in tles if is_fresh(l1)]
+    stale = len(tles) - len(fresh)
+    if stale:
+        print(f"  Skipped {stale} stale TLEs (epoch > 30 days old)")
+    tles = fresh
+
+    if not tles:
+        print("  No fresh TLEs available.")
+        return 0
+
+    now_iso = datetime.now(timezone.utc).isoformat()
     total = 0
 
     for i in range(0, len(tles), BATCH_SIZE):
@@ -153,7 +174,7 @@ def ingest_feed(session: requests.Session, key: str, limit: int) -> int:
                 "object_type": feed["object_type"],
                 "tle_line1": line1,
                 "tle_line2": line2,
-                "timestamp": tle_epoch_to_iso(line1),
+                "timestamp": now_iso,
             }
             for name, line1, line2 in batch
         ]

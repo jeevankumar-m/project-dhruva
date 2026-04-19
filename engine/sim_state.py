@@ -442,6 +442,9 @@ class SimulationState:
             sat.total_delta_v_mps += dv_mps
             sat.last_burn_time = cmd.burn_time
             cmd.executed = True
+            if cmd.burn_id.startswith("AUTO-EVA-"):
+                self.total_collisions_avoided += 1
+                sat.collisions_avoided += 1
             if cmd.burn_id.startswith("EOL-GRAVEYARD"):
                 sat.in_graveyard_orbit = True
                 sat.graveyard_entry_time = cmd.burn_time
