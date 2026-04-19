@@ -4,7 +4,10 @@
       "Bash(pip install:*)",
       "Bash(python -c \"import fitz; doc = fitz.open\\(''nsh_ps.pdf''\\); [print\\(doc[i].get_text\\(\\)\\) for i in range\\(len\\(doc\\)\\)]\")",
       "Bash(python -c \":*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(python -c \"import reportlab\")",
+      "Bash(python -c \"import fpdf\")",
+      "Bash(python:*)"
     ]
   }
 }
