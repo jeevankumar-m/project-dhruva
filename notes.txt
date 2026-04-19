@@ -1,0 +1,2 @@
+Integration of Gemini API to produce Live Results 
+Integration of any public satellite and debris data to identify and stress test the application 
