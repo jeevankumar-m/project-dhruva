@@ -137,18 +137,15 @@ def build_router(state: SimulationState) -> APIRouter:
         # Keep simulation time aligned with the last ingested object timestamp.
         last_ts: datetime | None = None
         for obj in payload.objects:
-            # Ensure ISO parsing uses timezone information.
-            epoch_iso = obj.timestamp.isoformat()
-            state_vec = tle_to_gcrs_state_km_kms(obj.tle_line1, obj.tle_line2, epoch_iso)
-            state_vec = np.asarray(state_vec, dtype=float)
-
-            state.ingest_object(
-                obj.id,
-                obj.object_type,
-                state_vec,
-            )
-            processed += 1
-            last_ts = obj.timestamp
+            try:
+                epoch_iso = obj.timestamp.isoformat()
+                state_vec = tle_to_gcrs_state_km_kms(obj.tle_line1, obj.tle_line2, epoch_iso)
+                state_vec = np.asarray(state_vec, dtype=float)
+                state.ingest_object(obj.id, obj.object_type, state_vec)
+                processed += 1
+                last_ts = obj.timestamp
+            except Exception:
+                continue
 
         if last_ts is not None:
             state.current_time = last_ts
