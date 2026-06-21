@@ -160,14 +160,70 @@ export default function OrbitTracker3D({
     (window as any).CESIUM_BASE_URL = "/cesium";
 
     if (!viewerRef.current) {
+      const imageryModels = [
+        new Cesium.ProviderViewModel({
+          name: "Natural Earth II",
+          iconUrl: Cesium.buildModuleUrl("Widgets/Images/ImageryProviders/naturalEarthII.png"),
+          tooltip: "Natural Earth II, without borders or labels.",
+          creationFunction: () =>
+            Cesium.TileMapServiceImageryProvider.fromUrl(
+              Cesium.buildModuleUrl("Assets/Textures/NaturalEarthII")
+            ),
+        }),
+        new Cesium.ProviderViewModel({
+          name: "Esri World Imagery",
+          iconUrl: Cesium.buildModuleUrl("Widgets/Images/ImageryProviders/ArcGisMapServiceWorldImagery.png"),
+          tooltip: "Esri World Imagery – high-resolution satellite and aerial photography.",
+          creationFunction: () =>
+            Cesium.ArcGisMapServerImageryProvider.fromUrl(
+              "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"
+            ),
+        }),
+        new Cesium.ProviderViewModel({
+          name: "Esri World Street Map",
+          iconUrl: Cesium.buildModuleUrl("Widgets/Images/ImageryProviders/openStreetMap.png"),
+          tooltip: "Esri World Street Map.",
+          creationFunction: () =>
+            Cesium.ArcGisMapServerImageryProvider.fromUrl(
+              "https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer"
+            ),
+        }),
+        new Cesium.ProviderViewModel({
+          name: "Esri World Hillshade",
+          iconUrl: Cesium.buildModuleUrl("Widgets/Images/ImageryProviders/ArcGisMapServiceWorldHillshade.png"),
+          tooltip: "Esri World Hillshade – shaded relief terrain.",
+          creationFunction: () =>
+            Cesium.ArcGisMapServerImageryProvider.fromUrl(
+              "https://services.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer"
+            ),
+        }),
+        new Cesium.ProviderViewModel({
+          name: "OpenStreetMap",
+          iconUrl: Cesium.buildModuleUrl("Widgets/Images/ImageryProviders/openStreetMap.png"),
+          tooltip: "OpenStreetMap community-built map tiles.",
+          creationFunction: () =>
+            new Cesium.UrlTemplateImageryProvider({
+              url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+              subdomains: ["a", "b", "c"],
+              maximumLevel: 19,
+            }),
+        }),
+      ];
+
       viewerRef.current = new Cesium.Viewer(containerRef.current, {
         shouldAnimate: true,
         selectionIndicator: false,
         infoBox: false,
         useDefaultRenderLoop: true,
+        baseLayerPicker: true,
+        imageryProviderViewModels: imageryModels,
+        selectedImageryProviderViewModel: imageryModels[0],
+        terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+        terrainProviderViewModels: [],
       });
 
       const viewer = viewerRef.current;
+
       // Disable lighting to eliminate sun-position jitter when clock updates
       viewer.scene.globe.enableLighting = false;
       viewer.scene.screenSpaceCameraController.enableZoom = true;

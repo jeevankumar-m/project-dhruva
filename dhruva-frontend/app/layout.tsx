@@ -31,6 +31,7 @@ export default function RootLayout({
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <AppProviders>{children}</AppProviders>
+        <Script id="cesium-base-url" strategy="beforeInteractive">{`window.CESIUM_BASE_URL = '/cesium';`}</Script>
         <Script src="/cesium/Cesium.js" strategy="beforeInteractive" />
       </body>
     </html>
